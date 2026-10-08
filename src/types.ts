@@ -45,10 +45,31 @@ export interface SidebarSection {
   items: SidebarItem[];
 }
 
+export interface AgentStepMatch {
+  file: string;
+  line: number;
+  preview: string;
+}
+
 export interface AgentStep {
+  id: string;
   type: 'search' | 'grep' | 'read' | 'edit' | 'test';
   query: string;
   status: 'pending' | 'running' | 'completed';
+  durationMs?: number;
+  matches?: AgentStepMatch[];
+  details?: string;
+  checkpointId?: string;
+  snapshotStats?: { additions: number; deletions: number };
+}
+
+export interface ProjectFile {
+  id: string;
+  path: string;
+  name: string;
+  content: string;
+  language: string;
+  isModified?: boolean;
 }
 
 export interface SessionData {
@@ -65,6 +86,8 @@ export interface SessionData {
   model: string;
 }
 
+export type RightPaneMode = 'diff' | 'editor';
 export type DiffViewMode = 'unified' | 'split';
 export type ThemeMode = 'light' | 'dark';
+
 

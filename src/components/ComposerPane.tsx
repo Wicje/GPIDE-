@@ -8,11 +8,15 @@ import {
   MoreHorizontal,
   Plus,
   ChevronDown,
+  ChevronRight,
   Mic,
-  MicOff,
   Sparkles,
   Loader2,
-  Volume2,
+  RotateCcw,
+  Clock,
+  FileCode,
+  Search,
+  CheckCircle2,
 } from 'lucide-react';
 import { SessionData, AgentStep } from '../types';
 import screenRecThumb from '../assets/images/screen_recording_thumb_1791421930526.jpg';
@@ -23,6 +27,7 @@ interface ComposerPaneProps {
   onCommitPush: () => void;
   onReviewClick: () => void;
   onGenerateEdits: (promptText: string) => void;
+  onRollbackCheckpoint?: (checkpointId: string, stepTitle: string) => void;
   isGenerating?: boolean;
   theme?: 'light' | 'dark';
 }
@@ -33,6 +38,7 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
   onCommitPush,
   onReviewClick,
   onGenerateEdits,
+  onRollbackCheckpoint,
   isGenerating = false,
   theme = 'light',
 }) => {
@@ -42,8 +48,8 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
   const [selectedModel, setSelectedModel] = useState(session.model || 'Composer 2.5 Fast');
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const [isVoiceRecording, setIsVoiceRecording] = useState(false);
+  const [expandedStepId, setExpandedStepId] = useState<string | null>('s-1');
 
-  // Sync selected model when session changes
   useEffect(() => {
     if (session.model) {
       setSelectedModel(session.model);
@@ -65,7 +71,6 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
     onGenerateEdits(userText);
   };
 
-  // Toggle voice dictation simulation
   const toggleVoice = () => {
     if (isVoiceRecording) {
       setIsVoiceRecording(false);
@@ -76,6 +81,10 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
         setIsVoiceRecording(false);
       }, 2400);
     }
+  };
+
+  const toggleStepExpand = (stepId: string) => {
+    setExpandedStepId((prev) => (prev === stepId ? null : stepId));
   };
 
   return (
@@ -120,18 +129,108 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
           {session.prompt}
         </div>
 
-        {/* AI Action Execution Steps */}
+        {/* AI Action Execution Steps with Inspector & Checkpoint Rollbacks */}
         <div className="space-y-1.5 text-[12.5px]">
-          {session.steps.map((step, idx) => (
-            <div key={idx} className="flex items-center gap-1.5 font-medium">
-              <span className={`font-semibold capitalize ${isDark ? 'text-white' : 'text-neutral-900'}`}>
-                {step.type}
-              </span>
-              <span className="text-neutral-500 font-normal truncate">
-                {step.query}
-              </span>
-            </div>
-          ))}
+          {session.steps.map((step) => {
+            const isExpanded = expandedStepId === step.id;
+
+            return (
+              <div
+                key={step.id}
+                className={`rounded-lg transition-colors border ${
+                  isExpanded
+                    ? isDark
+                      ? 'bg-[#202025] border-neutral-700 p-2.5'
+                      : 'bg-neutral-50/80 border-neutral-300 p-2.5 shadow-2xs'
+                    : 'border-transparent hover:bg-neutral-500/5 px-1 py-0.5'
+                }`}
+              >
+                {/* Step Row Header */}
+                <div
+                  onClick={() => toggleStepExpand(step.id)}
+                  className="flex items-center justify-between cursor-pointer"
+                >
+                  <div className="flex items-center gap-1.5 font-medium min-w-0">
+                    <span className="text-neutral-400">
+                      {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    </span>
+                    <span className={`font-semibold capitalize ${isDark ? 'text-white' : 'text-neutral-900'}`}>
+                      {step.type}
+                    </span>
+                    <span className="text-neutral-500 font-normal truncate">
+                      {step.query}
+                    </span>
+                  </div>
+
+                  {step.durationMs && (
+                    <span className="text-[10.5px] font-mono text-neutral-400 shrink-0 ml-1">
+                      {step.durationMs}ms
+                    </span>
+                  )}
+                </div>
+
+                {/* Expanded Inspection Card */}
+                {isExpanded && (
+                  <div className="mt-2.5 pt-2 border-t border-neutral-200/60 dark:border-neutral-700 space-y-2 text-xs">
+                    {step.details && (
+                      <p className="text-[11.5px] text-neutral-500 dark:text-neutral-400">
+                        {step.details}
+                      </p>
+                    )}
+
+                    {/* Matched AST lines */}
+                    {step.matches && step.matches.length > 0 && (
+                      <div className="space-y-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400 block">
+                          Matched Locations ({step.matches.length})
+                        </span>
+                        {step.matches.map((m, mi) => (
+                          <div
+                            key={mi}
+                            className={`p-1.5 rounded font-code text-[11px] leading-tight ${
+                              isDark ? 'bg-[#18181c] text-neutral-300' : 'bg-white border border-neutral-200 text-neutral-700'
+                            }`}
+                          >
+                            <div className="text-[10px] text-blue-500 truncate mb-0.5">
+                              {m.file}:{m.line}
+                            </div>
+                            <div className="truncate text-neutral-500">
+                              {m.preview}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Checkpoint Rollback Action */}
+                    {onRollbackCheckpoint && step.checkpointId && (
+                      <div className="pt-1 flex items-center justify-between">
+                        <span className="text-[10.5px] text-neutral-400 flex items-center gap-1">
+                          <CheckCircle2 size={11} className="text-emerald-500" />
+                          <span>Snapshot: {step.checkpointId}</span>
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRollbackCheckpoint(step.checkpointId!, `${step.type}: ${step.query}`);
+                          }}
+                          className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium transition-colors cursor-pointer ${
+                            isDark
+                              ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+                              : 'bg-white hover:bg-neutral-100 border border-neutral-300 text-neutral-700'
+                          }`}
+                          title="Restore workspace to this checkpoint"
+                        >
+                          <RotateCcw size={10} />
+                          <span>Roll back to step</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
 
           {isGenerating && (
             <div className="flex items-center gap-2 text-blue-500 font-medium py-1 animate-pulse">

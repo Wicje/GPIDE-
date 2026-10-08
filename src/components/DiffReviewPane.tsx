@@ -32,6 +32,7 @@ interface DiffReviewPaneProps {
   onCreatePR: () => void;
   onCommitPush: () => void;
   onAskComposer?: (codeSnippet: string) => void;
+  onSwitchToEditor?: () => void;
   diffViewMode: DiffViewMode;
   onToggleDiffViewMode: () => void;
   isTerminalOpen: boolean;
@@ -49,6 +50,7 @@ export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
   onCreatePR,
   onCommitPush,
   onAskComposer,
+  onSwitchToEditor,
   diffViewMode,
   onToggleDiffViewMode,
   isTerminalOpen,
@@ -127,6 +129,19 @@ export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
               <Activity size={13} />
               <span className="font-sans font-medium hidden sm:inline">Telemetry</span>
             </button>
+
+            {onSwitchToEditor && (
+              <button
+                onClick={onSwitchToEditor}
+                className={`p-1 rounded transition-colors cursor-pointer flex items-center gap-1 text-[11px] hover:text-neutral-700 dark:hover:text-neutral-200 ${
+                  isDark ? 'text-neutral-400' : 'text-neutral-600'
+                }`}
+                title="Switch to full code editor"
+              >
+                <FileCode size={13} />
+                <span className="font-sans font-medium hidden sm:inline">Editor</span>
+              </button>
+            )}
           </div>
 
           <div className="h-3.5 w-px bg-neutral-200 dark:bg-neutral-800" />

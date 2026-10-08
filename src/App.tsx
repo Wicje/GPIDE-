@@ -2,12 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ComposerPane } from './components/ComposerPane';
 import { DiffReviewPane } from './components/DiffReviewPane';
+import { CodeEditorPane } from './components/CodeEditorPane';
 import { VideoPreviewModal } from './components/VideoPreviewModal';
 import { PRModal } from './components/PRModal';
 import { CommandPaletteModal } from './components/CommandPaletteModal';
 import { NewAgentModal } from './components/NewAgentModal';
-import { INITIAL_SECTIONS, SESSIONS_MAP } from './data/mockData';
-import { DiffFile, DiffViewMode, ThemeMode, SessionData, SidebarSection } from './types';
+import { INITIAL_SECTIONS, SESSIONS_MAP, PROJECT_FILES } from './data/mockData';
+import {
+  DiffFile,
+  DiffViewMode,
+  ThemeMode,
+  SessionData,
+  SidebarSection,
+  ProjectFile,
+  RightPaneMode,
+} from './types';
 import lightWallpaperImg from './assets/images/macos_mountain_wallpaper_1791421916911.jpg';
 import darkWallpaperImg from './assets/images/macos_dark_wallpaper_1791422419326.jpg';
 import {
@@ -19,10 +28,13 @@ import {
   RefreshCw,
   Sparkles,
   Command,
+  FileCode,
+  GitBranch,
 } from 'lucide-react';
 
 export default function App() {
   const [theme, setTheme] = useState<ThemeMode>('light');
+  const [rightPaneMode, setRightPaneMode] = useState<RightPaneMode>('diff');
   const [diffViewMode, setDiffViewMode] = useState<DiffViewMode>('unified');
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
@@ -37,6 +49,10 @@ export default function App() {
   const [sessions, setSessions] = useState<Record<string, SessionData>>(SESSIONS_MAP);
   const [activeSessionId, setActiveSessionId] = useState<string>('composer-ghost');
   const [isGenerating, setIsGenerating] = useState(false);
+
+  // Project files state for Code Editor
+  const [projectFiles, setProjectFiles] = useState<ProjectFile[]>(PROJECT_FILES);
+  const [activeFileId, setActiveFileId] = useState<string>('f-tab-bar');
 
   const activeSession = sessions[activeSessionId] || sessions['composer-ghost'];
   const activeFiles = activeSession.files;
@@ -71,6 +87,11 @@ export default function App() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
         e.preventDefault();
         setIsTerminalOpen((prev) => !prev);
+      }
+      // ⌘E or Ctrl+E -> Toggle Editor / Diff View
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        setRightPaneMode((prev) => (prev === 'diff' ? 'editor' : 'diff'));
       }
     };
 
@@ -133,6 +154,29 @@ export default function App() {
     });
   };
 
+  // Rollback to checkpoint
+  const handleRollbackCheckpoint = (checkpointId: string, stepTitle: string) => {
+    showToast(`Rolled back workspace to snapshot: ${checkpointId}`);
+    setSessions((prev) => {
+      const sess = prev[activeSessionId];
+      if (!sess) return prev;
+
+      // Filter steps up to this checkpoint
+      const checkpointStepIndex = sess.steps.findIndex((s) => s.checkpointId === checkpointId);
+      const remainingSteps =
+        checkpointStepIndex !== -1 ? sess.steps.slice(0, checkpointStepIndex + 1) : sess.steps;
+
+      return {
+        ...prev,
+        [activeSessionId]: {
+          ...sess,
+          steps: remainingSteps,
+          response: `Rolled back to checkpoint "${stepTitle}". Prior unstaged changes reverted.`,
+        },
+      };
+    });
+  };
+
   // Live Agent Generation Flow
   const handleGenerateEdits = (promptText: string) => {
     setIsGenerating(true);
@@ -143,7 +187,6 @@ export default function App() {
         const sess = prev[activeSessionId];
         if (!sess) return prev;
 
-        // Generate synthetic diff hunk
         const newFile: DiffFile = {
           id: `new-file-${Date.now()}`,
           path: 'src/lib/debounceCompletion.ts',
@@ -165,15 +208,24 @@ export default function App() {
           ],
         };
 
+        const newStep = {
+          id: `step-${Date.now()}`,
+          type: 'edit' as const,
+          query: promptText.slice(0, 32),
+          status: 'completed' as const,
+          durationMs: 19,
+          details: `Generated debounce utility wrapper for prompt "${promptText}"`,
+          checkpointId: `cp-${Date.now().toString().slice(-4)}`,
+          matches: [
+            { file: 'src/lib/debounceCompletion.ts', line: 1, preview: 'export function debounce(...)' },
+          ],
+        };
+
         return {
           ...prev,
           [activeSessionId]: {
             ...sess,
-            steps: [
-              ...sess.steps,
-              { type: 'search', query: promptText.slice(0, 30), status: 'completed' },
-              { type: 'edit', query: 'src/lib/debounceCompletion.ts', status: 'completed' },
-            ],
+            steps: [...sess.steps, newStep],
             response: `Synthesized changes for: "${promptText}". Added debouncer with clean cancellation on rapid keystrokes.`,
             diffStats: {
               additions: sess.diffStats.additions + 18,
@@ -185,6 +237,8 @@ export default function App() {
         };
       });
 
+      // Switch to diff view if in editor
+      setRightPaneMode('diff');
       setIsGenerating(false);
       showToast('New diff generated! Review uncommitted changes.');
     }, 1400);
@@ -198,8 +252,24 @@ export default function App() {
       title: newPrompt.slice(0, 24) + '...',
       prompt: newPrompt,
       steps: [
-        { type: 'search', query: 'Scanning repository symbols', status: 'completed' },
-        { type: 'edit', query: 'Generating initial diff', status: 'completed' },
+        {
+          id: `s-init-${newId}`,
+          type: 'search',
+          query: 'Scanning repository symbols',
+          status: 'completed',
+          durationMs: 12,
+          details: 'Indexed project symbol graph',
+          checkpointId: 'cp-start',
+        },
+        {
+          id: `s-edit-${newId}`,
+          type: 'edit',
+          query: 'Generating initial diff',
+          status: 'completed',
+          durationMs: 24,
+          details: 'Scaffolded starter feature modules',
+          checkpointId: 'cp-scaffold',
+        },
       ],
       response: `Created implementation plan for: "${newPrompt}". Generated scaffold with unit tests.`,
       summary: `Initial scaffold synthesized. Ready for review and test verification.`,
@@ -222,7 +292,6 @@ export default function App() {
     };
 
     setSessions((prev) => ({ ...prev, [newId]: newSession }));
-    // Add to Cursor section
     setSections((prev) =>
       prev.map((sec) =>
         sec.title === 'Cursor'
@@ -237,6 +306,7 @@ export default function App() {
       )
     );
     setActiveSessionId(newId);
+    setRightPaneMode('diff');
     showToast(`Started new agent session: "${newSession.title}"`);
   };
 
@@ -249,6 +319,7 @@ export default function App() {
     setSections(INITIAL_SECTIONS);
     setActiveSessionId('composer-ghost');
     setDiffViewMode('unified');
+    setRightPaneMode('diff');
     showToast('Reset to default initial state');
   };
 
@@ -276,25 +347,27 @@ export default function App() {
 
         <span className="text-white/20 text-xs">|</span>
 
-        {/* Theme Switcher */}
+        {/* View Switcher: Diff vs Editor */}
         <button
-          onClick={toggleTheme}
+          onClick={() => setRightPaneMode(rightPaneMode === 'diff' ? 'editor' : 'diff')}
           className="flex items-center gap-1 px-1.5 py-0.5 hover:text-white rounded hover:bg-white/10 transition-colors cursor-pointer"
-          title={`Switch to ${isDark ? 'Light' : 'Dark'} mode`}
+          title="Toggle between SCM Diff Review and Code Editor (⌘E)"
         >
-          {isDark ? <Sun size={12} className="text-amber-400" /> : <Moon size={12} className="text-purple-300" />}
-          <span className="text-[11px] font-medium">{isDark ? 'Light' : 'Dark'}</span>
+          <span className="text-[11px] font-medium capitalize">
+            {rightPaneMode === 'diff' ? 'SCM Diff' : 'Editor'}
+          </span>
         </button>
 
         <span className="text-white/20 text-xs">|</span>
 
-        {/* Diff Mode Switcher */}
+        {/* Theme Switcher */}
         <button
-          onClick={() => setDiffViewMode(diffViewMode === 'unified' ? 'split' : 'unified')}
+          onClick={toggleTheme}
           className="flex items-center gap-1 px-1.5 py-0.5 hover:text-white rounded hover:bg-white/10 transition-colors cursor-pointer"
-          title="Toggle Split / Unified diff view"
+          title={`Switch to ${isDark ? 'Light' : 'Dark'} mode (⌘T)`}
         >
-          <span className="text-[11px] font-medium capitalize">{diffViewMode} Diff</span>
+          {isDark ? <Sun size={12} className="text-amber-400" /> : <Moon size={12} className="text-purple-300" />}
+          <span className="text-[11px] font-medium">{isDark ? 'Light' : 'Dark'}</span>
         </button>
 
         <span className="text-white/20 text-xs">|</span>
@@ -358,29 +431,44 @@ export default function App() {
           session={activeSession}
           onOpenVideoModal={() => setIsVideoModalOpen(true)}
           onCommitPush={() => showToast('Committed & pushed changes to erik/scm-pane-features')}
-          onReviewClick={() => showToast('Focusing SCM diff review pane')}
+          onReviewClick={() => {
+            setRightPaneMode('diff');
+            showToast('Focusing SCM diff review pane');
+          }}
           onGenerateEdits={handleGenerateEdits}
+          onRollbackCheckpoint={handleRollbackCheckpoint}
           isGenerating={isGenerating}
           theme={theme}
         />
 
-        {/* Right Column: Code Diff Review Pane */}
-        <DiffReviewPane
-          files={activeFiles}
-          onAcceptFile={handleAcceptFile}
-          onRevertFile={handleRevertFile}
-          onToggleStageFile={handleToggleStageFile}
-          onCreatePR={() => setIsPRModalOpen(true)}
-          onCommitPush={() => showToast('Committed & pushed changes to erik/scm-pane-features')}
-          onAskComposer={handleAskComposerAboutLine}
-          diffViewMode={diffViewMode}
-          onToggleDiffViewMode={() => setDiffViewMode(diffViewMode === 'unified' ? 'split' : 'unified')}
-          isTerminalOpen={isTerminalOpen}
-          onToggleTerminal={() => setIsTerminalOpen(!isTerminalOpen)}
-          isMaximized={isMaximized}
-          onToggleMaximize={() => setIsMaximized(!isMaximized)}
-          theme={theme}
-        />
+        {/* Right Column: Code Diff Review OR Code Editor Pane */}
+        {rightPaneMode === 'diff' ? (
+          <DiffReviewPane
+            files={activeFiles}
+            onAcceptFile={handleAcceptFile}
+            onRevertFile={handleRevertFile}
+            onToggleStageFile={handleToggleStageFile}
+            onCreatePR={() => setIsPRModalOpen(true)}
+            onCommitPush={() => showToast('Committed & pushed changes to erik/scm-pane-features')}
+            onAskComposer={handleAskComposerAboutLine}
+            onSwitchToEditor={() => setRightPaneMode('editor')}
+            diffViewMode={diffViewMode}
+            onToggleDiffViewMode={() => setDiffViewMode(diffViewMode === 'unified' ? 'split' : 'unified')}
+            isTerminalOpen={isTerminalOpen}
+            onToggleTerminal={() => setIsTerminalOpen(!isTerminalOpen)}
+            isMaximized={isMaximized}
+            onToggleMaximize={() => setIsMaximized(!isMaximized)}
+            theme={theme}
+          />
+        ) : (
+          <CodeEditorPane
+            files={projectFiles}
+            activeFileId={activeFileId}
+            onSelectFile={(id) => setActiveFileId(id)}
+            onSwitchToDiff={() => setRightPaneMode('diff')}
+            theme={theme}
+          />
+        )}
       </div>
 
       {/* Interactive Modals */}

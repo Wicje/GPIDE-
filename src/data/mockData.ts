@@ -1,4 +1,4 @@
-import { DiffFile, SidebarSection, SessionData } from '../types';
+import { DiffFile, SidebarSection, SessionData, ProjectFile } from '../types';
 
 export const INITIAL_SECTIONS: SidebarSection[] = [
   {
@@ -153,6 +153,133 @@ export const DIFF_FILES_COMPOSER_GHOST: DiffFile[] = [
   },
 ];
 
+export const PROJECT_FILES: ProjectFile[] = [
+  {
+    id: 'f-tab-bar',
+    path: 'src/components/PaneContainer/PaneTabBar.tsx',
+    name: 'PaneTabBar.tsx',
+    language: 'typescript',
+    isModified: true,
+    content: `import React, { useMemo, useCallback, useState } from "react";
+
+interface TabBarProps {
+  isCompact?: boolean;
+  isPinned?: boolean;
+}
+
+export function useTabDimensions({ isPinned, isCompact }: TabBarProps) {
+  return useMemo(() => {
+    if (!isPinned) {
+      return { iconSize: isCompact ? 12 : 14, buttonSizeClass: "" };
+    }
+    const iconSize = isCompact ? 14 : 16;
+    const buttonSizeClass = isCompact ? "w-6 h-6" : "w-7 h-7";
+    return { iconSize, buttonSizeClass };
+  }, [isPinned, isCompact]);
+}
+
+export function PinnedTabItem({ tab, isActive, isCompact, onTabClick }: any) {
+  const [hovered, setHovered] = useState(false);
+  const onLeave = useCallback(() => setHovered(false), []);
+  const onEnter = useCallback(() => setHovered(true), []);
+
+  return (
+    <div
+      className="flex items-center justify-center self-stretch px-0.5"
+      title={tab.shortcut || undefined}
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
+    >
+      <button
+        onClick={() => onTabClick(tab.id)}
+        className="flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors"
+      >
+        <span>{tab.title}</span>
+      </button>
+    </div>
+  );
+}`,
+  },
+  {
+    id: 'f-resize-obs',
+    path: 'src/hooks/useResizeObserver.ts',
+    name: 'useResizeObserver.ts',
+    language: 'typescript',
+    isModified: true,
+    content: `import { useEffect, useRef, useCallback } from "react";
+
+type ResizeCallback = (entry: ResizeObserverEntry) => void;
+
+export function useResizeObserver(
+  ref: React.RefObject<HTMLElement | null>,
+  callback: ResizeCallback,
+) {
+  const callbackRef = useRef(callback);
+  callbackRef.current = callback;
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const observer = new ResizeObserver((entries) => {
+      if (entries[0]) {
+        callbackRef.current(entries[0]);
+      }
+    });
+
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [ref]);
+}`,
+  },
+  {
+    id: 'f-debounce',
+    path: 'src/lib/debounceCompletion.ts',
+    name: 'debounceCompletion.ts',
+    language: 'typescript',
+    isModified: false,
+    content: `/**
+ * High-performance leading/trailing debounce for ghost-text completion pipeline.
+ * Cancels pending inference calls whenever a new keystroke is registered.
+ */
+export function debounceCompletion<T extends (...args: any[]) => void>(
+  fn: T,
+  waitMs: number = 35
+) {
+  let timer: NodeJS.Timeout | null = null;
+  let abortController: AbortController | null = null;
+
+  return (...args: Parameters<T>) => {
+    if (abortController) {
+      abortController.abort();
+    }
+    abortController = new AbortController();
+
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      fn(...args);
+    }, waitMs);
+  };
+}`,
+  },
+  {
+    id: 'f-package',
+    path: 'package.json',
+    name: 'package.json',
+    language: 'json',
+    isModified: false,
+    content: `{
+  "name": "cursor-composer-app",
+  "version": "0.42.0-nightly",
+  "private": true,
+  "dependencies": {
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "motion": "^12.23.24",
+    "lucide-react": "^0.546.0"
+  }
+}`,
+  },
+];
+
 export const SESSIONS_MAP: Record<string, SessionData> = {
   'composer-ghost': {
     id: 'composer-ghost',
@@ -160,8 +287,34 @@ export const SESSIONS_MAP: Record<string, SessionData> = {
     prompt:
       'Rewrite the ghost-text pipeline to reduce suggestion latency, add multi-line preview, and handle cancellation when the user keeps typing',
     steps: [
-      { type: 'search', query: 'ghost text render path', status: 'completed' },
-      { type: 'grep', query: 'inline completion + debounce', status: 'completed' },
+      {
+        id: 's-1',
+        type: 'search',
+        query: 'ghost text render path',
+        status: 'completed',
+        durationMs: 14,
+        details: 'Queried AST symbols for ghost text virtual overlay and token spans.',
+        checkpointId: 'cp-init',
+        snapshotStats: { additions: 0, deletions: 0 },
+        matches: [
+          { file: 'src/components/PaneContainer/PaneTabBar.tsx', line: 13, preview: 'const pinnedIconSize = isCompact ? 14 : 16;' },
+          { file: 'src/components/PaneContainer/PaneTabBar.tsx', line: 33, preview: 'className="flex items-center self-stretch"' },
+        ],
+      },
+      {
+        id: 's-2',
+        type: 'grep',
+        query: 'inline completion + debounce',
+        status: 'completed',
+        durationMs: 8,
+        details: 'Scanned 14 files for debounce timers and active AbortController races.',
+        checkpointId: 'cp-grep',
+        snapshotStats: { additions: 25, deletions: 0 },
+        matches: [
+          { file: 'src/hooks/useResizeObserver.ts', line: 1, preview: 'import { useEffect, useRef, useCallback } from "react";' },
+          { file: 'src/lib/debounceCompletion.ts', line: 7, preview: 'export function debounceCompletion(...)' },
+        ],
+      },
     ],
     response:
       "On it. I'll profile the current pipeline, fix the cancellation race, and add multi-line ghost-text rendering with proper stale-completion cleanup.",
@@ -179,8 +332,25 @@ export const SESSIONS_MAP: Record<string, SessionData> = {
     prompt:
       'Add drag and drop reordering to sidebar navigation items with smooth keyboard accessible reordering and optimistic local state',
     steps: [
-      { type: 'search', query: 'Sidebar list items drag reorder', status: 'completed' },
-      { type: 'read', query: 'src/components/Sidebar.tsx', status: 'completed' },
+      {
+        id: 'sr-1',
+        type: 'search',
+        query: 'Sidebar list items drag reorder',
+        status: 'completed',
+        durationMs: 11,
+        details: 'Located section array loop and active item state handler.',
+        matches: [
+          { file: 'src/components/Sidebar.tsx', line: 42, preview: 'const handleMove = (id: string, delta: number) => {' },
+        ],
+      },
+      {
+        id: 'sr-2',
+        type: 'read',
+        query: 'src/components/Sidebar.tsx',
+        status: 'completed',
+        durationMs: 6,
+        details: 'Read 240 lines to construct optimistic list swap hook.',
+      },
     ],
     response:
       'Added smooth item swap handlers, drag grips, and keyboard shortcuts (⌥↑ and ⌥↓) for reordering sidebar items without layout jitter.',
@@ -210,8 +380,22 @@ export const SESSIONS_MAP: Record<string, SessionData> = {
     prompt:
       'Implement structured tool approval gates for destructive bash commands with diff previews before execution',
     steps: [
-      { type: 'grep', query: 'run_command executeToolCall', status: 'completed' },
-      { type: 'edit', query: 'src/agent/ApprovalGate.tsx', status: 'completed' },
+      {
+        id: 'ac-1',
+        type: 'grep',
+        query: 'run_command executeToolCall',
+        status: 'completed',
+        durationMs: 9,
+        details: 'Found execution dispatcher without prompt verification barrier.',
+      },
+      {
+        id: 'ac-2',
+        type: 'edit',
+        query: 'src/agent/ApprovalGate.tsx',
+        status: 'completed',
+        durationMs: 22,
+        details: 'Synthesized modal dialog with sandboxed dry-run execution.',
+      },
     ],
     response:
       'Created approval modal interceptor for dangerous operations, with command simulation and roll-back snapshots.',
@@ -242,7 +426,14 @@ export const SESSIONS_MAP: Record<string, SessionData> = {
     prompt:
       'Refresh hero typography and micro-interactions on features matrix with high DPI SVG illustrations',
     steps: [
-      { type: 'search', query: 'HeroSection.tsx layout Tailwind', status: 'completed' },
+      {
+        id: 'cl-1',
+        type: 'search',
+        query: 'HeroSection.tsx layout Tailwind',
+        status: 'completed',
+        durationMs: 12,
+        details: 'Checked header component style classes and responsive breakpoints.',
+      },
     ],
     response:
       'Updated typography scale to Inter Display with subtle ambient glow backdrop blur.',
