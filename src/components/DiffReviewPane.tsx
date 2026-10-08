@@ -7,7 +7,7 @@ import {
   GitCommit,
   ChevronDown,
   ChevronRight,
-  MoreHorizontal,
+  Copy,
   RotateCcw,
   Check,
   FileCode,
@@ -80,6 +80,22 @@ export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
   const [expandedContext, setExpandedContext] = useState<Record<string, boolean>>({});
   const [currentBranch, setCurrentBranch] = useState(branchName ?? 'workspace');
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
+  const [copiedDiff, setCopiedDiff] = useState(false);
+
+  function copyFullDiff() {
+    const text = files
+      .map((f) => {
+        const body = [...(f.extraContextTop ?? []), ...f.lines]
+          .map((l) => `${l.type === 'add' ? '+' : l.type === 'delete' ? '-' : ' '}${l.content}`)
+          .join('\n');
+        return `--- a/${f.path}\n+++ b/${f.path}\n${body}`;
+      })
+      .join('\n\n');
+    if (!text) return;
+    navigator.clipboard?.writeText(text);
+    setCopiedDiff(true);
+    setTimeout(() => setCopiedDiff(false), 2000);
+  }
 
   React.useEffect(() => {
     if (branchName) setCurrentBranch(branchName);
@@ -264,10 +280,11 @@ export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
         {/* Right Action buttons */}
         <div className="flex items-center gap-2">
           <button
+            onClick={copyFullDiff}
             className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 p-1 transition-colors cursor-pointer"
-            title="More actions"
+            title={copiedDiff ? 'Diff copied!' : 'Copy full diff to clipboard'}
           >
-            <MoreHorizontal size={14} />
+            {copiedDiff ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
           </button>
 
           <button

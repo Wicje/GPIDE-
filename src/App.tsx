@@ -580,23 +580,22 @@ export default function App() {
     [runs, isPRStudioOpen],
   );
 
-  async function handleProviderSignIn(provider: 'github' | 'google' | 'email', email?: string) {
+  async function handleMagicLink(email: string): Promise<string> {
     const sb = getSupabase();
     if (!sb) throw new Error('Sign-in is not configured (VITE_SUPABASE_URL).');
     setSignInError(null);
-    if (provider === 'email') {
-      if (!email) throw new Error('Enter an email address.');
-      const { error } = await sb.auth.signInWithOtp({ email });
-      if (error) throw new Error(error.message);
-      throw new Error('Check your email for the sign-in link.');
+    const { error } = await sb.auth.signInWithOtp({ email });
+    if (error) {
+      setSignInError(error.message);
+      throw new Error(error.message);
     }
-    const { error } = await sb.auth.signInWithOAuth({
-      provider,
-      options: { redirectTo: window.location.origin },
-    });
-    if (error) throw new Error(error.message);
-    return { name: email ?? provider, email: email ?? '' };
+    return 'Check your email for the sign-in link — it lands you straight back here.';
   }
+
+  // Close the login modal the moment a real session lands (e.g. OAuth redirect).
+  useEffect(() => {
+    if (user) setIsLoginAccountOpen(false);
+  }, [user]);
 
   async function captureScreen(): Promise<string | null> {
     const md = navigator.mediaDevices as MediaDevices & { getDisplayMedia?: (c?: unknown) => Promise<MediaStream> };
@@ -814,7 +813,7 @@ export default function App() {
     }
   };
 
-  const modelOptions = [...GEMINI_MODELS.map((m) => m.label), ...(cloudEnabled() ? [CLOUD_LABEL] : [])];
+  const modelOptions = ['Gemini 2.5 Flash', 'Gemini 2.5 Pro', ...(cloudEnabled() ? [CLOUD_LABEL] : [])];
 
   const isDark = theme === 'dark';
   const currentWallpaper = isDark ? darkWallpaperImg : lightWallpaperImg;
@@ -1106,30 +1105,7 @@ export default function App() {
         title={`${activeSession.title} — screen recording`}
         videoSrc={videoUrl}
         onStartCapture={async () => {
-          const md = navigator.mediaDevices as MediaDevices & { getDisplayMedia?: (c?: unknown) => Promise<MediaStream> };
-          if (!md?.getDisplayMedia) throw new Error('Screen capture is not supported in this browser.');
-          const stream = await md.getDisplayMedia({ video: true });
-          showToast('Recording… stop sharing to finish the clip.');
-          const url = await new Promise<string | null>((resolve) => {
-            const rec = new MediaRecorder(stream);
-            const chunks: Blob[] = [];
-            rec.ondataavailable = (e) => {
-              if (e.data.size) chunks.push(e.data);
-            };
-            rec.onstop = () => {
-              stream.getTracks().forEach((t) => t.stop());
-              resolve(chunks.length > 0 ? URL.createObjectURL(new Blob(chunks, { type: rec.mimeType || 'video/webm' })) : null);
-            };
-            stream.getVideoTracks()[0]?.addEventListener('ended', () => {
-              try {
-                if (rec.state !== 'inactive') rec.stop();
-                else resolve(null);
-              } catch {
-                resolve(null);
-              }
-            });
-            rec.start();
-          });
+          const url = await captureScreen();
           if (url) {
             setVideoUrl(url);
             setSessions((prev) => {
@@ -1251,20 +1227,23 @@ export default function App() {
           const sb = getSupabase();
           if (!sb) throw new Error('Sign-in is not configured (VITE_SUPABASE_URL).');
           setSignInError(null);
-          if (provider === 'email') {
-            if (!email) throw new Error('Enter an email address.');
-            const { error } = await sb.auth.signInWithOtp({ email });
-            if (error) throw new Error(error.message);
-            throw new Error('Check your email for the sign-in link.');
+          if (provider !== 'github' && provider !== 'google') {
+            throw new Error('Use a magic link for email sign-in.');
           }
           const { error } = await sb.auth.signInWithOAuth({
             provider,
             options: { redirectTo: window.location.origin },
           });
           if (error) throw new Error(error.message);
-          return { name: provider, email: '' };
+          return { name: provider, email: email ?? '' };
         }}
+        onMagicLink={handleMagicLink}
         signInError={signInError}
+        authHint={
+          getSupabase()
+            ? null
+            : 'Running local-only: add VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY and restart to enable sign-in.'
+        }
         teamLine="Personal workspace"
         resetLine={`Resets ${new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toLocaleDateString([], { month: 'short', day: 'numeric' })}`}
         geminiKeySet={geminiKeySet}

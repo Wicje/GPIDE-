@@ -31,7 +31,11 @@ interface LoginAndAccountModalProps {
   theme?: 'light' | 'dark';
   /** Real sign-in channel. Resolves with the signed-in user. */
   onProviderSignIn?: (provider: 'github' | 'google' | 'email', email?: string) => Promise<{ name: string; email: string }>;
+  /** Magic-link channel. Resolves with the confirmation notice to display. */
+  onMagicLink?: (email: string) => Promise<string>;
   signInError?: string | null;
+  /** Shown when auth has no backend (self-hosted mode hint). */
+  authHint?: string | null;
   teamLine?: string;
   resetLine?: string;
   geminiKeySet?: boolean;
@@ -47,7 +51,9 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
   onLogout,
   theme = 'light',
   onProviderSignIn,
+  onMagicLink,
   signInError,
+  authHint,
   teamLine,
   resetLine,
   geminiKeySet,
@@ -60,6 +66,7 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
   const [customApiKeyEnabled, setCustomApiKeyEnabled] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -68,13 +75,43 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
   );
 
   const handleDemoSignIn = (provider: 'github' | 'google' | 'email') => {
+    if (provider === 'email') {
+      void handleMagicLink();
+      return;
+    }
     if (!onProviderSignIn) return;
     setBusy(true);
-    const email = provider === 'email' ? emailInput.trim() || undefined : undefined;
-    void onProviderSignIn(provider, email)
+    setNotice(null);
+    void onProviderSignIn(provider)
       .then((user) => {
         onLoginSuccess?.(user);
         setActiveTab('account');
+      })
+      .catch(() => {
+        /* error surfaces via signInError prop */
+      })
+      .finally(() => setBusy(false));
+  };
+
+  const handleMagicLink = () => {
+    const email = emailInput.trim();
+    if (!email || busy) return;
+    setBusy(true);
+    setNotice(null);
+    const send = onMagicLink
+      ? onMagicLink(email)
+      : (onProviderSignIn
+          ? onProviderSignIn('email', email).then(() => 'Signed in.')
+          : Promise.reject(new Error('Sign-in is not configured.')));
+    void send
+      .then((msg) => {
+        // A fresh session means we are signed in; otherwise show the notice
+        // (e.g. "check your email") and stay on this tab.
+        if (msg === 'SIGNED_IN') {
+          setActiveTab('account');
+        } else {
+          setNotice(msg);
+        }
       })
       .catch(() => {
         /* error surfaces via signInError prop */
@@ -330,6 +367,16 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
               <div className="flex-1 h-px bg-neutral-200 dark:bg-neutral-800" />
             </div>
 
+            {authHint && !signInError && !notice && (
+              <div className="rounded-lg bg-neutral-500/10 border border-neutral-300 dark:border-neutral-700 px-3 py-2 text-[11px] text-neutral-600 dark:text-neutral-300">
+                {authHint}
+              </div>
+            )}
+            {notice && (
+              <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 text-[11px] text-emerald-700 dark:text-emerald-300">
+                {notice}
+              </div>
+            )}
             {signInError && (
               <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[11px] text-red-600 dark:text-red-400">
                 {signInError}
@@ -338,7 +385,7 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                handleDemoSignIn('email');
+                handleMagicLink();
               }}
               className="space-y-2"
             >
@@ -351,9 +398,10 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
               />
               <button
                 type="submit"
-                className="w-full py-2 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 font-semibold text-xs rounded-xl hover:opacity-90 transition-opacity cursor-pointer shadow-xs"
+                disabled={busy}
+                className="w-full py-2 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 font-semibold text-xs rounded-xl hover:opacity-90 transition-opacity cursor-pointer shadow-xs disabled:opacity-50"
               >
-                Send Magic Link
+                {busy ? 'Working…' : 'Send Magic Link'}
               </button>
             </form>
           </div>

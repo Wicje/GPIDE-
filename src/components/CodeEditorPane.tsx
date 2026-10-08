@@ -67,6 +67,14 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
   const activeFile = files.find((f) => f.id === activeFileId) || files[0];
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
 
+  if (!activeFile) {
+    return (
+      <div className="flex-1 grid place-content-center text-xs text-neutral-400 select-none">
+        No files in this project yet — ask the agent to create one.
+      </div>
+    );
+  }
+
   // Keyboard shortcut listener inside editor (⌘K toggles the inline prompt)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
