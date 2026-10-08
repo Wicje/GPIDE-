@@ -1396,6 +1396,7 @@ export default function App() {
           logEvent('DEPLOY', url);
           return { url };
         }}
+        onPushGithub={() => setShowGithub(true)}
         theme={theme}
       />
 
@@ -1508,6 +1509,7 @@ export default function App() {
         onOpenHistory={() => setShowHistory(true)}
         onShare={() => setShowShare(true)}
         onImportUrl={() => setShowImport(true)}
+        onPushGithub={() => setShowGithub(true)}
         theme={theme}
       />
 

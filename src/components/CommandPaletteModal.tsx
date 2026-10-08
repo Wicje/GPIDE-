@@ -41,6 +41,7 @@ interface CommandPaletteModalProps {
   onOpenHistory?: () => void;
   onShare?: () => void;
   onImportUrl?: () => void;
+  onPushGithub?: () => void;
   theme?: 'light' | 'dark';
   sessions?: Array<{ id: string; title: string }>;
 }
@@ -60,6 +61,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
   onOpenHistory,
   onShare,
   onImportUrl,
+  onPushGithub,
   theme = 'light',
   sessions,
 }) => {
@@ -128,6 +130,16 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
       icon: <Globe size={14} className="text-emerald-500" />,
       action: () => {
         if (onImportUrl) onImportUrl();
+        onClose();
+      },
+    },
+    {
+      id: 'push-github',
+      title: 'Push to GitHub',
+      category: 'Source Control',
+      icon: <GitPullRequest size={14} className="text-neutral-500" />,
+      action: () => {
+        if (onPushGithub) onPushGithub();
         onClose();
       },
     },

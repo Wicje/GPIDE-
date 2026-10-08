@@ -22,6 +22,7 @@ interface VercelDeployModalProps {
   /** Real deploy channel: streams log lines, resolves with the live URL. */
   onDeploy?: (onLog: (line: string) => void) => Promise<{ url: string }>;
   deployError?: string | null;
+  onPushGithub?: () => void;
 }
 
 export const VercelDeployModal: React.FC<VercelDeployModalProps> = ({
@@ -31,6 +32,7 @@ export const VercelDeployModal: React.FC<VercelDeployModalProps> = ({
   theme = 'light',
   onDeploy,
   deployError,
+  onPushGithub,
 }) => {
   const isDark = theme === 'dark';
   const [deployState, setDeployState] = useState<'idle' | 'building' | 'deployed'>('idle');
@@ -154,6 +156,17 @@ export const VercelDeployModal: React.FC<VercelDeployModalProps> = ({
                 <span>Publish live URL</span>
                 <ArrowRight size={13} />
               </button>
+              {onPushGithub && (
+                <button
+                  onClick={() => {
+                    onClose();
+                    onPushGithub();
+                  }}
+                  className="mx-auto block text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 underline-offset-2 hover:underline"
+                >
+                  or push the code to GitHub instead
+                </button>
+              )}
             </div>
           )}
 
