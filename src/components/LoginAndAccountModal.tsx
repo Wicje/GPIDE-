@@ -29,6 +29,14 @@ interface LoginAndAccountModalProps {
   onLoginSuccess?: (user: { name: string; email: string }) => void;
   onLogout?: () => void;
   theme?: 'light' | 'dark';
+  /** Real sign-in channel. Resolves with the signed-in user. */
+  onProviderSignIn?: (provider: 'github' | 'google' | 'email', email?: string) => Promise<{ name: string; email: string }>;
+  signInError?: string | null;
+  teamLine?: string;
+  resetLine?: string;
+  geminiKeySet?: boolean;
+  onSaveGeminiKey?: (key: string) => void;
+  onClearGeminiKey?: () => void;
 }
 
 export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
@@ -38,26 +46,40 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
   onLoginSuccess,
   onLogout,
   theme = 'light',
+  onProviderSignIn,
+  signInError,
+  teamLine,
+  resetLine,
+  geminiKeySet,
+  onSaveGeminiKey,
+  onClearGeminiKey,
 }) => {
   const isDark = theme === 'dark';
   const [activeTab, setActiveTab] = useState<'account' | 'signin'>('account');
   const [emailInput, setEmailInput] = useState('');
   const [customApiKeyEnabled, setCustomApiKeyEnabled] = useState(false);
+  const [keyInput, setKeyInput] = useState('');
+  const [busy, setBusy] = useState(false);
 
   if (!isOpen) return null;
 
   const usagePercent = Math.round(
-    (currentUser.fastRequestsUsed / currentUser.fastRequestsLimit) * 100
+    (currentUser.fastRequestsUsed / Math.max(1, currentUser.fastRequestsLimit)) * 100
   );
 
-  const handleDemoSignIn = (provider: string) => {
-    if (onLoginSuccess) {
-      onLoginSuccess({
-        name: provider === 'github' ? 'Sualeh Asif' : 'Victor C.',
-        email: provider === 'github' ? 'sualeh@anysphere.co' : 'victor@example.com',
-      });
-    }
-    setActiveTab('account');
+  const handleDemoSignIn = (provider: 'github' | 'google' | 'email') => {
+    if (!onProviderSignIn) return;
+    setBusy(true);
+    const email = provider === 'email' ? emailInput.trim() || undefined : undefined;
+    void onProviderSignIn(provider, email)
+      .then((user) => {
+        onLoginSuccess?.(user);
+        setActiveTab('account');
+      })
+      .catch(() => {
+        /* error surfaces via signInError prop */
+      })
+      .finally(() => setBusy(false));
   };
 
   return (
@@ -117,7 +139,7 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
             <div className="flex items-center justify-between p-3 rounded-xl bg-neutral-50 dark:bg-[#222228] border border-neutral-200 dark:border-neutral-700">
               <div className="flex items-center gap-3">
                 <img
-                  src={avatarImg}
+                  src={currentUser.avatar || avatarImg}
                   alt={currentUser.name}
                   className="w-10 h-10 rounded-full object-cover ring-2 ring-blue-500/30"
                 />
@@ -156,7 +178,7 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
               </div>
 
               <div className="flex items-center justify-between text-[10.5px] text-neutral-400 pt-0.5">
-                <span>Resets Nov 1, 2026</span>
+                <span>{resetLine ?? 'Resets monthly'}</span>
                 <span>{usagePercent}% utilized</span>
               </div>
             </div>
@@ -168,31 +190,67 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
                 <span className="font-medium">Team Workspace</span>
               </div>
               <span className="text-neutral-500 font-mono text-[11px]">
-                Anysphere (14 seats)
+                {teamLine ?? 'Personal workspace'}
               </span>
             </div>
 
             {/* API Keys Configuration Toggle */}
-            <div className="flex items-center justify-between p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-700">
-              <div className="flex items-center gap-2">
-                <Key size={14} className="text-neutral-400" />
-                <div>
-                  <div className="font-medium">Custom API Keys</div>
-                  <div className="text-[10px] text-neutral-400">Use personal OpenAI / Anthropic keys</div>
+            <div className="p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-700 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Key size={14} className="text-neutral-400" />
+                  <div>
+                    <div className="font-medium">Custom API Keys</div>
+                    <div className="text-[10px] text-neutral-400">Your Gemini key, stored only in this browser</div>
+                  </div>
                 </div>
-              </div>
-              <button
-                onClick={() => setCustomApiKeyEnabled(!customApiKeyEnabled)}
-                className={`w-8 h-4 rounded-full transition-colors relative cursor-pointer ${
-                  customApiKeyEnabled ? 'bg-blue-600' : 'bg-neutral-300 dark:bg-neutral-700'
-                }`}
-              >
-                <div
-                  className={`w-3 h-3 rounded-full bg-white absolute top-0.5 transition-transform ${
-                    customApiKeyEnabled ? 'right-0.5' : 'left-0.5'
+                <button
+                  onClick={() => setCustomApiKeyEnabled(!customApiKeyEnabled)}
+                  className={`w-8 h-4 rounded-full transition-colors relative cursor-pointer ${
+                    customApiKeyEnabled ? 'bg-blue-600' : 'bg-neutral-300 dark:bg-neutral-700'
                   }`}
-                />
-              </button>
+                >
+                  <div
+                    className={`w-3 h-3 rounded-full bg-white absolute top-0.5 transition-transform ${
+                      customApiKeyEnabled ? 'right-0.5' : 'left-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+              {customApiKeyEnabled && (
+                geminiKeySet ? (
+                  <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-1.5">
+                    <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Gemini key saved in this browser</span>
+                    <button
+                      className="text-[11px] text-neutral-500 underline-offset-2 hover:underline"
+                      onClick={() => onClearGeminiKey?.()}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="password"
+                      value={keyInput}
+                      onChange={(e) => setKeyInput(e.target.value)}
+                      placeholder="AIza… (Google AI Studio key)"
+                      autoComplete="off"
+                      className="h-8 flex-1 rounded-md border border-neutral-300 dark:border-neutral-700 bg-transparent px-2 font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <button
+                      className="h-8 px-2.5 rounded-md bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-[11px] font-semibold disabled:opacity-40"
+                      disabled={!keyInput.trim()}
+                      onClick={() => {
+                        onSaveGeminiKey?.(keyInput.trim());
+                        setKeyInput('');
+                      }}
+                    >
+                      Save
+                    </button>
+                  </div>
+                )
+              )}
             </div>
 
             {/* Bottom Actions */}
@@ -232,13 +290,15 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
             <div className="space-y-2 pt-2">
               <button
                 onClick={() => handleDemoSignIn('github')}
-                className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border border-neutral-300 dark:border-neutral-700 font-semibold text-xs hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+                disabled={busy}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border border-neutral-300 dark:border-neutral-700 font-semibold text-xs hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors cursor-pointer disabled:opacity-50"
               >
                 <Github size={15} />
-                <span>Continue with GitHub</span>
+                <span>{busy ? 'Working…' : 'Continue with GitHub'}</span>
               </button>
 
               <button
+                disabled={busy}
                 onClick={() => handleDemoSignIn('google')}
                 className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border border-neutral-300 dark:border-neutral-700 font-semibold text-xs hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
               >
@@ -270,6 +330,11 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
               <div className="flex-1 h-px bg-neutral-200 dark:bg-neutral-800" />
             </div>
 
+            {signInError && (
+              <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[11px] text-red-600 dark:text-red-400">
+                {signInError}
+              </div>
+            )}
             <form
               onSubmit={(e) => {
                 e.preventDefault();

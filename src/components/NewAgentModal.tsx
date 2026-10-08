@@ -6,6 +6,8 @@ interface NewAgentModalProps {
   onClose: () => void;
   onSubmit: (prompt: string, model: string) => void;
   theme?: 'light' | 'dark';
+  models?: string[];
+  templates?: Array<{ title: string; text: string }>;
 }
 
 export const NewAgentModal: React.FC<NewAgentModalProps> = ({
@@ -13,23 +15,26 @@ export const NewAgentModal: React.FC<NewAgentModalProps> = ({
   onClose,
   onSubmit,
   theme = 'light',
+  models,
+  templates,
 }) => {
   const isDark = theme === 'dark';
+  const modelOptions = models ?? ['Composer 2.5 Fast', 'Claude 3.7 Sonnet', 'GPT-4.5 Preview'];
   const [prompt, setPrompt] = useState('');
-  const [model, setModel] = useState('Composer 2.5 Fast');
+  const [model, setModel] = useState(modelOptions[0]);
 
-  const templates = [
+  const starterTemplates = templates ?? [
     {
-      title: 'Debounce Keystroke Handler',
-      text: 'Add leading/trailing debounce to ghost-text trigger on keystroke events to prevent spamming the inference pipeline.',
+      title: 'New Component',
+      text: 'Create a new component following the existing patterns in this project.',
     },
     {
-      title: 'Vitest Unit Tests for Tabs',
-      text: 'Write full unit tests in Vitest and React Testing Library covering pinned tab states and compact rendering.',
+      title: 'Fix Layout',
+      text: 'Review the active file for layout issues and fix what you find.',
     },
     {
-      title: 'Telemetry Event Dispatcher',
-      text: 'Track completion accepted/rejected rates with latency percentiles and anonymized character delta counting.',
+      title: 'Explain Code',
+      text: 'Explain what the active file does, section by section.',
     },
   ];
 
@@ -80,7 +85,7 @@ export const NewAgentModal: React.FC<NewAgentModalProps> = ({
               Quick start templates:
             </span>
             <div className="space-y-1.5">
-              {templates.map((tpl, i) => (
+              {starterTemplates.map((tpl, i) => (
                 <button
                   key={i}
                   type="button"
@@ -106,9 +111,9 @@ export const NewAgentModal: React.FC<NewAgentModalProps> = ({
                   isDark ? 'bg-neutral-800 border-neutral-700 text-neutral-200' : 'bg-white border-neutral-300 text-neutral-700'
                 }`}
               >
-                <option value="Composer 2.5 Fast">Composer 2.5 Fast</option>
-                <option value="Claude 3.7 Sonnet">Claude 3.7 Sonnet</option>
-                <option value="GPT-4.5 Preview">GPT-4.5 Preview</option>
+                {modelOptions.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
               </select>
             </div>
 

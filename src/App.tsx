@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ComposerPane } from './components/ComposerPane';
 import { DiffReviewPane } from './components/DiffReviewPane';
@@ -7,23 +7,53 @@ import { LiveAppPreviewPane } from './components/LiveAppPreviewPane';
 import { TestExplorerPane } from './components/TestExplorerPane';
 import { VideoPreviewModal } from './components/VideoPreviewModal';
 import { PRModal } from './components/PRModal';
-import { PRReviewStudioModal } from './components/PRReviewStudioModal';
+import { PRReviewStudioModal, type PRCheck, type PRCommit, type PRComment } from './components/PRReviewStudioModal';
 import { VercelDeployModal } from './components/VercelDeployModal';
 import { LoginAndAccountModal } from './components/LoginAndAccountModal';
 import { CursorRulesModal } from './components/CursorRulesModal';
 import { CommandPaletteModal } from './components/CommandPaletteModal';
 import { NewAgentModal } from './components/NewAgentModal';
-import { INITIAL_SECTIONS, SESSIONS_MAP, PROJECT_FILES } from './data/mockData';
-import {
-  DiffFile,
+import type {
+  AgentStep,
   DiffViewMode,
   ThemeMode,
   SessionData,
   SidebarSection,
-  ProjectFile,
   RightPaneMode,
   TestCase,
 } from './types';
+import type { FileMap } from './adapters/filemap';
+import {
+  detectProjectKind,
+  findProgramEntry,
+  fileMapToProjectFiles,
+  buildDiffFiles,
+} from './adapters/filemap';
+import { parseEdits, stripEditBlocks } from './adapters/aiEdits';
+import { initRunner, bundleProject, buildSrcdoc, formatBuildErrors, CONSOLE_SOURCE } from './adapters/preview';
+import {
+  brokerEnabled,
+  cloudEnabled,
+  getSupabase,
+  listProjects,
+  createProject,
+  updateProject,
+  setProjectShared,
+  buildShareLink,
+  runEntry,
+  cloudAgentTurn,
+  agentUseThisMonth,
+  bumpAgentUse,
+  AGENT_MONTHLY_CAP,
+  loadDraft,
+  saveDraft,
+  listSnapshots,
+  takeSnapshot,
+  loadRules,
+  saveRules,
+  deployStatic,
+} from './adapters/zut';
+import { geminiTurn, getGeminiKey, setGeminiKey } from './adapters/gemini';
 import lightWallpaperImg from './assets/images/macos_mountain_wallpaper_1791421916911.jpg';
 import darkWallpaperImg from './assets/images/macos_dark_wallpaper_1791422419326.jpg';
 import {
@@ -33,12 +63,71 @@ import {
   Sun,
   Moon,
   RefreshCw,
-  Sparkles,
   Command,
-  FileCode,
-  Monitor,
-  CheckSquare,
 } from 'lucide-react';
+
+const STARTER: FileMap = {
+  'index.html':
+    '<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <title>zut app</title>\n  <link rel="stylesheet" href="styles.css" />\n</head>\n<body>\n  <h1>Hello from zut</h1>\n  <script src="app.js"></script>\n</body>\n</html>\n',
+  'styles.css': 'body { font-family: system-ui, sans-serif; padding: 2rem; }\n',
+  'app.js': 'console.log("Hello from zut!");\n',
+};
+
+const GEMINI_MODELS = [
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+];
+const CLOUD_LABEL = 'Cloud agent';
+
+function modelLabels(): string[] {
+  return [...GEMINI_MODELS.map((m) => m.label), ...(cloudEnabled() ? [CLOUD_LABEL] : [])];
+}
+
+function labelToGeminiId(label: string): string {
+  return GEMINI_MODELS.find((m) => m.label === label)?.id ?? GEMINI_MODELS[0].id;
+}
+
+function timeAgo(ts: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+function stamp(): string {
+  return new Date().toLocaleTimeString([], { hour12: false });
+}
+
+interface RunRecord {
+  id: string;
+  label: string;
+  exitCode: number | null;
+  durationMs: number;
+  at: number;
+  output: string;
+}
+
+interface ChatMsg {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+function blankSession(id: string, title: string, model: string): SessionData {
+  return {
+    id,
+    title,
+    prompt: '',
+    steps: [],
+    response: '',
+    summary: '',
+    diffStats: { additions: 0, deletions: 0, filesCount: 0 },
+    files: [],
+    model,
+  };
+}
 
 export default function App() {
   const [theme, setTheme] = useState<ThemeMode>('light');
@@ -64,36 +153,478 @@ export default function App() {
 
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // User State
-  const [currentUser, setCurrentUser] = useState({
-    name: 'Sualeh Asif',
-    email: 'sualeh@anysphere.co',
-    plan: 'Cursor Pro',
-    avatar: '',
-    fastRequestsUsed: 412,
-    fastRequestsLimit: 500,
+  // ---- Real user (Supabase session; signed out by default) ----
+  const [user, setUser] = useState<{ name: string; email: string } | null>(null);
+  const [signInError, setSignInError] = useState<string | null>(null);
+  const [geminiKeySet, setGeminiKeySet] = useState(() => getGeminiKey() !== null);
+
+  useEffect(() => {
+    const sb = getSupabase();
+    if (!sb) return;
+    sb.auth.getSession().then(({ data }) => {
+      const u = data.session?.user;
+      if (u?.email) {
+        setUser({
+          name: (u.user_metadata?.name as string | undefined) ?? u.email.split('@')[0],
+          email: u.email,
+        });
+      }
+    });
+    const { data: sub } = sb.auth.onAuthStateChange((_event, session) => {
+      const u = session?.user;
+      if (u?.email) {
+        setUser({
+          name: (u.user_metadata?.name as string | undefined) ?? u.email.split('@')[0],
+          email: u.email,
+        });
+      } else {
+        setUser(null);
+      }
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // ---- Real project (local draft first, broker cloud when signed in) ----
+  const [files, setFiles] = useState<FileMap>(() => loadDraft()?.files ?? STARTER);
+  const [projectName, setProjectName] = useState(() => loadDraft()?.name ?? 'my-project');
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const filesRef = useRef(files);
+  filesRef.current = files;
+
+  useEffect(() => {
+    saveDraft(projectName, files);
+  }, [projectName, files]);
+
+  // Baseline snapshot so "modified" dots and diffs have something to compare.
+  useEffect(() => {
+    if (listSnapshots().length === 0) takeSnapshot(filesRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Load the most recent cloud project on sign-in (local draft stays otherwise).
+  useEffect(() => {
+    if (!user || !brokerEnabled()) return;
+    listProjects()
+      .then((rows) => {
+        if (rows.length === 0) return;
+        const latest = rows[0];
+        setProjectId(latest.id);
+        if (Object.keys(filesRef.current).length <= 3) {
+          setFiles({ ...latest.files });
+          setProjectName(latest.name);
+          takeSnapshot({ ...latest.files });
+          showToast(`Opened cloud project "${latest.name}"`);
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  const kind = useMemo(() => detectProjectKind(files), [files]);
+  const reviewBase = useMemo(() => {
+    const snaps = listSnapshots();
+    return snaps.length > 0 ? snaps[0].files : {};
+  }, [files]);
+  const projectFiles = useMemo(
+    () => fileMapToProjectFiles(files, (p) => (reviewBase[p] ?? '') !== (files[p] ?? '')),
+    [files, reviewBase],
+  );
+  const [activeFilePath, setActiveFilePath] = useState<string>(() => {
+    const names = Object.keys(loadDraft()?.files ?? STARTER).sort();
+    return names[0] ?? 'index.html';
   });
 
-  // Sessions and sections state
-  const [sections, setSections] = useState<SidebarSection[]>(INITIAL_SECTIONS);
-  const [sessions, setSessions] = useState<Record<string, SessionData>>(SESSIONS_MAP);
-  const [activeSessionId, setActiveSessionId] = useState<string>('composer-ghost');
+  // ---- Real sessions (agent conversations; no fixtures) ----
+  const [sessions, setSessions] = useState<Record<string, SessionData>>(() => {
+    const id = 'session-1';
+    return { [id]: blankSession(id, 'New agent', 'Gemini 2.5 Flash') };
+  });
+  const [activeSessionId, setActiveSessionId] = useState<string>('session-1');
+  const [sessionBases, setSessionBases] = useState<Record<string, FileMap>>({});
+  const [chatHistories, setChatHistories] = useState<Record<string, ChatMsg[]>>({});
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
   const [isGenerating, setIsGenerating] = useState(false);
 
-  // Project files state for Code Editor
-  const [projectFiles, setProjectFiles] = useState<ProjectFile[]>(PROJECT_FILES);
-  const [activeFileId, setActiveFileId] = useState<string>('f-tab-bar');
-
-  const activeSession = sessions[activeSessionId] || sessions['composer-ghost'];
+  const activeSession = sessions[activeSessionId] ?? Object.values(sessions)[0];
   const activeFiles = activeSession.files;
 
-  const isDark = theme === 'dark';
-  const currentWallpaper = isDark ? darkWallpaperImg : lightWallpaperImg;
+  // ---- Runs, preview, events, video, PR (all real) ----
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [srcDoc, setSrcDoc] = useState('');
+  const [consoleLines, setConsoleLines] = useState<string[]>([]);
+  const [events, setEvents] = useState<string[]>(() => [`[${stamp()}] Workspace ready.`]);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [prData, setPrData] = useState<{
+    title: string;
+    description: string;
+    shareUrl: string | null;
+  } | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3200);
   };
+
+  const logEvent = (tag: string, msg: string) => {
+    setEvents((prev) => [...prev.slice(-199), `[${stamp()}] [${tag}] ${msg}`]);
+  };
+
+  // Preview console harness -> console drawer lines.
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      const data = e.data as { source?: string; type?: string; payload?: { level?: string; message?: string } };
+      if (data && data.source === CONSOLE_SOURCE && data.type === 'console') {
+        setConsoleLines((prev) => [...prev.slice(-199), `[${data.payload?.level ?? 'log'}] ${data.payload?.message ?? ''}`]);
+      }
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  async function rebuildPreview(target: FileMap) {
+    if (detectProjectKind(target) !== 'web' || target['index.html'] === undefined) {
+      setSrcDoc('');
+      return;
+    }
+    try {
+      await initRunner();
+      const bundle = await bundleProject(target);
+      setSrcDoc(buildSrcdoc(target['index.html'], bundle));
+    } catch (e) {
+      const errs = formatBuildErrors(e).map((r) => r.message).join(' | ');
+      setConsoleLines((prev) => [...prev.slice(-199), `[error] Build error: ${errs}`]);
+      setSrcDoc('');
+    }
+  }
+
+  // Live preview rebuilds as web files change (debounced).
+  useEffect(() => {
+    if (kind !== 'web') {
+      setSrcDoc('');
+      return;
+    }
+    const t = setTimeout(() => {
+      void rebuildPreview(filesRef.current);
+    }, 900);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files, kind]);
+
+  function recordRun(label: string, exitCode: number | null, durationMs: number, output: string) {
+    const rec: RunRecord = { id: `run-${Date.now()}`, label, exitCode, durationMs, at: Date.now(), output };
+    setRuns((prev) => [rec, ...prev].slice(0, 20));
+    logEvent('RUN', `${label} → exit ${exitCode ?? '?'} in ${durationMs}ms`);
+    return rec;
+  }
+
+  async function executeEntry(entry: string | null, stdin = ''): Promise<string[]> {
+    const current = filesRef.current;
+    if (!entry) return ['No runnable entry found (expected main.py or main.go).'];
+    try {
+      const result = await runEntry(current, entry, stdin);
+      const lines: string[] = [];
+      if (result.stdout.trim()) lines.push(...result.stdout.slice(0, 4000).split('\n').slice(0, 20));
+      if (result.stderr.trim()) lines.push(...result.stderr.slice(0, 2000).split('\n').slice(0, 10).map((l) => `stderr: ${l}`));
+      lines.push(`exit ${result.exitCode ?? '?'} in ${result.durationMs}ms`);
+      if (result.truncated) lines.push('(output truncated at 256KB)');
+      recordRun(`run ${entry}`, result.exitCode, result.durationMs, result.stdout.slice(0, 2000));
+      return lines;
+    } catch (e) {
+      return [`error: ${(e as Error).message}`];
+    }
+  }
+
+  // ---- Real agent turn (Gemini direct, or cloud agent) ----
+  async function runAgentTurn(sessionId: string, promptText: string) {
+    const sess = sessionsRef.current[sessionId];
+    if (!sess || isGenerating) return;
+    const base = { ...filesRef.current };
+    const snap = takeSnapshot(base);
+    const t0 = performance.now();
+    setSessionBases((prev) => ({ ...prev, [sessionId]: base }));
+    setIsGenerating(true);
+    const runningStepId = `step-${Date.now()}`;
+    const pushStep = (step: AgentStep) => {
+      setSessions((prev) => {
+        const s = prev[sessionId];
+        if (!s) return prev;
+        return { ...prev, [sessionId]: { ...s, steps: [...s.steps, step] } };
+      });
+    };
+    pushStep({ id: runningStepId, type: 'edit', query: promptText.slice(0, 64), status: 'running', checkpointId: snap.id });
+    const dropRunning = () => {
+      setSessions((prev) => {
+        const s = prev[sessionId];
+        if (!s) return prev;
+        return { ...prev, [sessionId]: { ...s, steps: s.steps.filter((x) => x.id !== runningStepId) } };
+      });
+    };
+
+    try {
+      const modelLabel = sessionsRef.current[sessionId]?.model ?? 'Gemini 2.5 Flash';
+      let reply: string;
+      let changedPaths: string[];
+      if (modelLabel === CLOUD_LABEL) {
+        const r = await cloudAgentTurn(base, promptText, { projectId });
+        for (const [p, c] of Object.entries(r.updated)) base[p] = c;
+        for (const [p, c] of Object.entries(r.created)) base[p] = c;
+        for (const p of r.deleted) delete base[p];
+        reply = r.reply;
+        changedPaths = [...Object.keys(r.updated), ...Object.keys(r.created), ...r.deleted];
+      } else {
+        const history = (chatHistories[sessionId] ?? []).slice(-12);
+        const r = await geminiTurn(history, promptText, {
+          model: labelToGeminiId(modelLabel),
+          projectName,
+          files: base,
+          activePath: activeFilePath,
+        });
+        reply = r.reply;
+        changedPaths = [];
+        const edits = parseEdits(reply, base);
+        for (const e of edits) {
+          base[e.path] = e.content;
+          changedPaths.push(e.path);
+        }
+        setChatHistories((prev) => ({
+          ...prev,
+          [sessionId]: [
+            ...(prev[sessionId] ?? []),
+            { role: 'user' as const, content: promptText },
+            { role: 'assistant' as const, content: reply },
+          ].slice(-24),
+        }));
+      }
+
+      const ms = Math.round(performance.now() - t0);
+      setFiles({ ...base });
+      const files = buildDiffFiles(snap.files, base);
+      const totals = files.reduce(
+        (acc, f) => ({ additions: acc.additions + f.additions, deletions: acc.deletions + f.deletions }),
+        { additions: 0, deletions: 0 },
+      );
+      const clean = stripEditBlocks(reply);
+      const done: AgentStep[] =
+        changedPaths.length > 0
+          ? changedPaths.map((p, i) => ({
+              id: `step-${Date.now()}-${i}`,
+              type: 'edit' as const,
+              query: p,
+              status: 'completed' as const,
+              durationMs: ms,
+              details: 'Applied to workspace',
+              checkpointId: snap.id,
+              matches: [],
+            }))
+          : [
+              {
+                id: `step-${Date.now()}`,
+                type: 'read' as const,
+                query: `Reviewed ${Object.keys(base).length} project files`,
+                status: 'completed' as const,
+                durationMs: ms,
+                checkpointId: snap.id,
+              },
+            ];
+      dropRunning();
+      setSessions((prev) => {
+        const s = prev[sessionId];
+        if (!s) return prev;
+        return {
+          ...prev,
+          [sessionId]: {
+            ...s,
+            prompt: s.prompt || promptText,
+            response: clean.slice(0, 2000),
+            summary: clean.slice(0, 280),
+            diffStats: { additions: totals.additions, deletions: totals.deletions, filesCount: files.length },
+            files,
+          },
+        };
+      });
+      bumpAgentUse();
+      logEvent('AGENT', `Turn done in ${ms}ms (${files.length} files)`);
+      showToast(files.length > 0 ? `Agent updated ${files.length} file${files.length === 1 ? '' : 's'} — review the diff` : 'Agent replied (no file changes)');
+    } catch (e) {
+      dropRunning();
+      pushStep({
+        id: `step-${Date.now()}`,
+        type: 'edit',
+        query: promptText.slice(0, 64),
+        status: 'failed',
+        details: (e as Error).message,
+      });
+      showToast(`Agent failed: ${(e as Error).message}`);
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  // Sidebar sections from live data (agents + project files).
+  const sections: SidebarSection[] = [
+    {
+      title: 'Agents',
+      items: Object.values(sessions).map((s) => ({ id: s.id, title: s.title })),
+    },
+    {
+      title: 'Project',
+      items: Object.keys(files)
+        .sort()
+        .map((p) => ({ id: `file:${p}`, title: p })),
+    },
+  ];
+
+  const telemetry = useMemo(() => {
+    if (runs.length === 0) return null;
+    const ds = runs.map((r) => r.durationMs).sort((a, b) => a - b);
+    return {
+      runs: runs.length,
+      medianMs: ds[Math.floor(ds.length / 2)],
+      lastExit: runs[0].exitCode,
+      lastAt: new Date(runs[0].at).toLocaleTimeString([], { hour12: false }),
+    };
+  }, [runs]);
+
+  const testRows: TestCase[] = useMemo(
+    () =>
+      runs.slice(0, 10).map((r) => ({
+        id: r.id,
+        name: `${r.label} (exit ${r.exitCode ?? '?'})`,
+        file: r.label.startsWith('run ') ? r.label.slice(4) : projectName,
+        status: r.exitCode === 0 ? ('passed' as const) : ('failed' as const),
+        durationMs: r.durationMs,
+        ...(r.exitCode !== 0 ? { error: r.output.slice(0, 500) || `Exited with code ${r.exitCode}` } : {}),
+      })),
+    [runs, projectName],
+  );
+
+  async function handleTerminalCommand(cmd: string): Promise<string[]> {
+    const [verb, ...rest] = cmd.trim().split(/\s+/);
+    if (verb === 'run') {
+      const k = detectProjectKind(filesRef.current);
+      if (k === 'web') {
+        await rebuildPreview(filesRef.current);
+        return srcDoc || filesRef.current['index.html'] !== undefined
+          ? ['Preview rebuilt — open the Preview pane.']
+          : ['No index.html — nothing to preview.'];
+      }
+      const entry = rest[0] ?? findProgramEntry(filesRef.current, k);
+      return executeEntry(entry);
+    }
+    if (verb === 'status') {
+      return [
+        `Project ${projectName} (${kind}, ${Object.keys(filesRef.current).length} files)`,
+        `${runs.length} runs recorded this session`,
+        brokerEnabled() ? 'Broker: connected' : 'Broker: not configured (VITE_BROKER_URL)',
+      ];
+    }
+    if (verb === 'help') return ['Commands: run [entry], status, help'];
+    return [`unknown command: ${verb}. Try run, status, help.`];
+  }
+
+  async function handleCommitPush() {
+    await save();
+    setIsVercelDeployOpen(true);
+  }
+
+  async function handleSharePR(title: string, description: string) {
+    setIsPRModalOpen(false);
+    let shareUrl: string | null = null;
+    if (user && brokerEnabled() && projectId) {
+      try {
+        const token = await setProjectShared(projectId, true);
+        if (token) shareUrl = buildShareLink(token);
+      } catch (e) {
+        showToast(`Share failed: ${(e as Error).message}`);
+      }
+    }
+    const snaps = listSnapshots();
+    const commits = snaps.slice(0, 10).map((s) => ({
+      hash: s.id.slice(-6),
+      message: `Snapshot ${new Date(s.createdAt).toLocaleString()}`,
+      time: timeAgo(s.createdAt),
+    }));
+    const checks: PRCheck[] = runs.slice(0, 10).map((r) => ({
+      name: r.label,
+      status: r.exitCode === 0 ? ('passed' as const) : ('failed' as const),
+      time: `${r.durationMs}ms`,
+    }));
+    const comments: PRComment[] = [
+      ...(description.trim() ? [{ author: user?.name ?? 'you', time: 'just now', body: description.trim() }] : []),
+      ...(shareUrl ? [{ author: 'zut', time: 'just now', body: `Review link: ${shareUrl}` }] : []),
+    ];
+    void commits;
+    void checks;
+    void comments;
+    setPrData({ title: title || `${projectName} review`, description, shareUrl });
+    setIsPRStudioOpen(true);
+  }
+
+  const prCommits: PRCommit[] = useMemo(
+    () =>
+      listSnapshots()
+        .slice(0, 10)
+        .map((s) => ({ hash: s.id.slice(-6), message: `Snapshot ${new Date(s.createdAt).toLocaleString()}`, time: timeAgo(s.createdAt) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isPRStudioOpen, files],
+  );
+
+  const prChecks: PRCheck[] = useMemo(
+    () =>
+      runs.slice(0, 10).map((r) => ({
+        name: r.label,
+        status: r.exitCode === 0 ? ('passed' as const) : ('failed' as const),
+        time: `${r.durationMs}ms`,
+      })),
+    [runs, isPRStudioOpen],
+  );
+
+  async function handleProviderSignIn(provider: 'github' | 'google' | 'email', email?: string) {
+    const sb = getSupabase();
+    if (!sb) throw new Error('Sign-in is not configured (VITE_SUPABASE_URL).');
+    setSignInError(null);
+    if (provider === 'email') {
+      if (!email) throw new Error('Enter an email address.');
+      const { error } = await sb.auth.signInWithOtp({ email });
+      if (error) throw new Error(error.message);
+      throw new Error('Check your email for the sign-in link.');
+    }
+    const { error } = await sb.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: window.location.origin },
+    });
+    if (error) throw new Error(error.message);
+    return { name: email ?? provider, email: email ?? '' };
+  }
+
+  async function captureScreen(): Promise<string | null> {
+    const md = navigator.mediaDevices as MediaDevices & { getDisplayMedia?: (c?: unknown) => Promise<MediaStream> };
+    if (!md?.getDisplayMedia) throw new Error('Screen capture is not supported in this browser.');
+    const stream = await md.getDisplayMedia({ video: true });
+    const rec = new MediaRecorder(stream);
+    const chunks: Blob[] = [];
+    const done = new Promise<string | null>((resolve) => {
+      rec.ondataavailable = (e) => {
+        if (e.data.size) chunks.push(e.data);
+      };
+      rec.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        if (chunks.length === 0) resolve(null);
+        else resolve(URL.createObjectURL(new Blob(chunks, { type: rec.mimeType || 'video/webm' })));
+      };
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+        try {
+          rec.stop();
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    rec.start();
+    showToast('Recording… stop sharing to finish the clip.');
+    return done;
+  }
 
   // Mouse drag handlers for resizable dividers
   useEffect(() => {
@@ -176,37 +707,39 @@ export default function App() {
     showToast(`Switched to ${next} mode`);
   };
 
-  const handleReorderItem = (sectionTitle: string, itemId: string, direction: 'up' | 'down') => {
-    setSections((prev) =>
-      prev.map((sec) => {
-        if (sec.title !== sectionTitle) return sec;
-        const idx = sec.items.findIndex((item) => item.id === itemId);
-        if (idx === -1) return sec;
-        const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
-        if (targetIdx < 0 || targetIdx >= sec.items.length) return sec;
-
-        const newItems = [...sec.items];
-        const [moved] = newItems.splice(idx, 1);
-        newItems.splice(targetIdx, 0, moved);
-        return { ...sec, items: newItems };
-      })
-    );
-    showToast(`Reordered sidebar item`);
-  };
-
   const handleAcceptFile = (fileId: string) => {
-    setSessions((prev) => {
-      const sess = prev[activeSessionId];
-      if (!sess) return prev;
-      const updatedFiles = sess.files.map((f) =>
-        f.id === fileId ? { ...f, accepted: !f.accepted } : f
-      );
-      return { ...prev, [activeSessionId]: { ...sess, files: updatedFiles } };
-    });
+    // Edits land in the workspace immediately; accept marks review state.
     showToast('File hunk accepted');
+    void fileId;
   };
 
   const handleRevertFile = (fileId: string) => {
+    const base = sessionBases[activeSessionId] ?? {};
+    const target = activeSession.files.find((f) => f.id === fileId);
+    if (!target) return;
+    setFiles((prev) => {
+      const next = { ...prev };
+      if (target.path in base) next[target.path] = base[target.path];
+      else delete next[target.path];
+      return next;
+    });
+    setSessions((prev) => {
+      const s = prev[activeSessionId];
+      if (!s) return prev;
+      const kept = s.files.filter((f) => f.id !== fileId);
+      const totals = kept.reduce(
+        (acc, f) => ({ additions: acc.additions + f.additions, deletions: acc.deletions + f.deletions }),
+        { additions: 0, deletions: 0 },
+      );
+      return {
+        ...prev,
+        [activeSessionId]: {
+          ...s,
+          files: kept,
+          diffStats: { ...s.diffStats, additions: totals.additions, deletions: totals.deletions, filesCount: kept.length },
+        },
+      };
+    });
     showToast('File hunk changes reverted');
   };
 
@@ -222,180 +755,69 @@ export default function App() {
   };
 
   const handleRollbackCheckpoint = (checkpointId: string, stepTitle: string) => {
+    const snap = listSnapshots().find((s) => s.id === checkpointId);
+    if (!snap) {
+      showToast('Snapshot not found.');
+      return;
+    }
+    setFiles({ ...snap.files });
+    logEvent('ROLLBACK', stepTitle);
     showToast(`Rolled back workspace to snapshot: ${checkpointId}`);
-    setSessions((prev) => {
-      const sess = prev[activeSessionId];
-      if (!sess) return prev;
-
-      const checkpointStepIndex = sess.steps.findIndex((s) => s.checkpointId === checkpointId);
-      const remainingSteps =
-        checkpointStepIndex !== -1 ? sess.steps.slice(0, checkpointStepIndex + 1) : sess.steps;
-
-      return {
-        ...prev,
-        [activeSessionId]: {
-          ...sess,
-          steps: remainingSteps,
-          response: `Rolled back to checkpoint "${stepTitle}". Prior unstaged changes reverted.`,
-        },
-      };
-    });
-  };
-
-  const handleGenerateEdits = (promptText: string) => {
-    setIsGenerating(true);
-    showToast('Agent synthesizing diff and running AST parser...');
-
-    setTimeout(() => {
-      setSessions((prev) => {
-        const sess = prev[activeSessionId];
-        if (!sess) return prev;
-
-        const newFile: DiffFile = {
-          id: `new-file-${Date.now()}`,
-          path: 'src/lib/debounceCompletion.ts',
-          additions: 18,
-          deletions: 0,
-          status: 'added',
-          staged: true,
-          lines: [
-            { oldLineNumber: '', newLineNumber: 1, type: 'add', content: 'export function debounce<T extends (...args: any[]) => void>(' },
-            { oldLineNumber: '', newLineNumber: 2, type: 'add', content: '  fn: T,' },
-            { oldLineNumber: '', newLineNumber: 3, type: 'add', content: '  waitMs: number,' },
-            { oldLineNumber: '', newLineNumber: 4, type: 'add', content: ') {' },
-            { oldLineNumber: '', newLineNumber: 5, type: 'add', content: '  let timer: NodeJS.Timeout | null = null;' },
-            { oldLineNumber: '', newLineNumber: 6, type: 'add', content: '  return (...args: Parameters<T>) => {' },
-            { oldLineNumber: '', newLineNumber: 7, type: 'add', content: '    if (timer) clearTimeout(timer);' },
-            { oldLineNumber: '', newLineNumber: 8, type: 'add', content: '    timer = setTimeout(() => fn(...args), waitMs);' },
-            { oldLineNumber: '', newLineNumber: 9, type: 'add', content: '  };' },
-            { oldLineNumber: '', newLineNumber: 10, type: 'add', content: '}' },
-          ],
-        };
-
-        const newStep = {
-          id: `step-${Date.now()}`,
-          type: 'edit' as const,
-          query: promptText.slice(0, 32),
-          status: 'completed' as const,
-          durationMs: 19,
-          details: `Generated debounce utility wrapper for prompt "${promptText}"`,
-          checkpointId: `cp-${Date.now().toString().slice(-4)}`,
-          matches: [
-            { file: 'src/lib/debounceCompletion.ts', line: 1, preview: 'export function debounce(...)' },
-          ],
-        };
-
-        return {
-          ...prev,
-          [activeSessionId]: {
-            ...sess,
-            steps: [...sess.steps, newStep],
-            response: `Synthesized changes for: "${promptText}". Added debouncer with clean cancellation on rapid keystrokes.`,
-            diffStats: {
-              additions: sess.diffStats.additions + 18,
-              deletions: sess.diffStats.deletions,
-              filesCount: sess.diffStats.filesCount + 1,
-            },
-            files: [newFile, ...sess.files],
-          },
-        };
-      });
-
-      setRightPaneMode('diff');
-      setIsGenerating(false);
-      showToast('New diff generated! Review uncommitted changes.');
-    }, 1400);
-  };
-
-  const handleInspectElement = (element: { component: string; file: string; line: number }) => {
-    showToast(`Inspected ${element.component}. Routing to Composer...`);
-    handleGenerateEdits(`Refactor ${element.component} in ${element.file}:${element.line} to optimize render latency and handle stale state`);
-  };
-
-  const handleAutoFixTest = (test: TestCase) => {
-    showToast(`Agent auto-fixing test: "${test.name}"...`);
-    handleGenerateEdits(`Fix failing Vitest assertion in ${test.file}: "${test.name}" (${test.expected})`);
   };
 
   const handleNewAgentSubmit = (newPrompt: string, newModel: string) => {
     const newId = `session-${Date.now()}`;
-    const newSession: SessionData = {
-      id: newId,
-      title: newPrompt.slice(0, 24) + '...',
-      prompt: newPrompt,
-      steps: [
-        {
-          id: `s-init-${newId}`,
-          type: 'search',
-          query: 'Scanning repository symbols',
-          status: 'completed',
-          durationMs: 12,
-          details: 'Indexed project symbol graph',
-          checkpointId: 'cp-start',
-        },
-        {
-          id: `s-edit-${newId}`,
-          type: 'edit',
-          query: 'Generating initial diff',
-          status: 'completed',
-          durationMs: 24,
-          details: 'Scaffolded starter feature modules',
-          checkpointId: 'cp-scaffold',
-        },
-      ],
-      response: `Created implementation plan for: "${newPrompt}". Generated scaffold with unit tests.`,
-      summary: `Initial scaffold synthesized. Ready for review and test verification.`,
-      diffStats: { additions: 35, deletions: 4, filesCount: 2 },
-      files: [
-        {
-          id: `f-${newId}`,
-          path: 'src/features/newFeature.ts',
-          additions: 35,
-          deletions: 4,
-          status: 'modified',
-          lines: [
-            { oldLineNumber: 1, newLineNumber: '', type: 'delete', content: '// legacy implementation' },
-            { oldLineNumber: '', newLineNumber: 1, type: 'add', content: 'export const featureFlags = { enabled: true };' },
-            { oldLineNumber: '', newLineNumber: 2, type: 'add', content: 'export function runPipeline() { return true; }' },
-          ],
-        },
-      ],
-      model: newModel,
-    };
-
+    const newSession = blankSession(newId, newPrompt.slice(0, 32) || 'New agent', newModel);
+    newSession.prompt = newPrompt;
     setSessions((prev) => ({ ...prev, [newId]: newSession }));
-    setSections((prev) =>
-      prev.map((sec) =>
-        sec.title === 'Cursor'
-          ? {
-              ...sec,
-              items: [
-                { id: newId, title: newSession.title, badge: 'blue' },
-                ...sec.items,
-              ],
-            }
-          : sec
-      )
-    );
     setActiveSessionId(newId);
     setRightPaneMode('diff');
     showToast(`Started new agent session: "${newSession.title}"`);
+    void runAgentTurn(newId, newPrompt);
   };
 
   const handleAskComposerAboutLine = (snippet: string) => {
-    handleGenerateEdits(`Refactor this code: "${snippet.slice(0, 40)}"`);
+    setRightPaneMode('diff');
+    void runAgentTurn(activeSessionId, `Refactor this code: "${snippet.slice(0, 40)}"`);
+  };
+
+  const handleInlinePrompt = (prompt: string, fileId: string) => {
+    void runAgentTurn(activeSessionId, `In ${fileId}: ${prompt}`);
+  };
+
+  const handleAutoFixTest = (test: TestCase) => {
+    showToast(`Agent auto-fixing test: "${test.name}"...`);
+    void runAgentTurn(activeSessionId, `Test "${test.name}" in ${test.file} failed${test.error ? `: ${test.error}` : ''}. Fix it.`);
   };
 
   const handleReset = () => {
-    setSessions(SESSIONS_MAP);
-    setSections(INITIAL_SECTIONS);
-    setActiveSessionId('composer-ghost');
-    setDiffViewMode('unified');
-    setRightPaneMode('diff');
-    setSidebarWidth(210);
-    setComposerWidth(380);
-    showToast('Reset to default initial state');
+    if (user && brokerEnabled()) {
+      listProjects()
+        .then((rows) => {
+          if (rows.length > 0) {
+            setFiles({ ...rows[0].files });
+            setProjectName(rows[0].name);
+            setProjectId(rows[0].id);
+            showToast('Workspace refreshed from cloud.');
+          } else {
+            showToast('Nothing to refresh yet.');
+          }
+        })
+        .catch((e: unknown) => showToast(`Refresh failed: ${(e as Error).message}`));
+    } else {
+      const draft = loadDraft();
+      if (draft) {
+        setFiles({ ...draft.files });
+        setProjectName(draft.name);
+      }
+      showToast('Workspace refreshed from this device.');
+    }
   };
+
+  const modelOptions = [...GEMINI_MODELS.map((m) => m.label), ...(cloudEnabled() ? [CLOUD_LABEL] : [])];
+
+  const isDark = theme === 'dark';
+  const currentWallpaper = isDark ? darkWallpaperImg : lightWallpaperImg;
 
   return (
     <div
@@ -423,7 +845,7 @@ export default function App() {
         <button
           onClick={() => setIsVercelDeployOpen(true)}
           className="flex items-center gap-1.5 px-1.5 py-0.5 hover:text-white rounded hover:bg-white/10 transition-colors cursor-pointer"
-          title="Deploy to Vercel (⌘V)"
+          title="Deploy to the web"
         >
           <svg viewBox="0 0 76 65" fill="currentColor" className="w-2.5 h-2.5">
             <path d="M37.5274 0L75.0548 65H0L37.5274 0Z" />
@@ -493,7 +915,7 @@ export default function App() {
         <button
           onClick={handleReset}
           className="flex items-center gap-1 px-1.5 py-0.5 hover:text-white rounded hover:bg-white/10 transition-colors cursor-pointer"
-          title="Reset to default screenshot state"
+          title="Refresh workspace from saved state"
         >
           <RefreshCw size={11} />
         </button>
@@ -519,14 +941,14 @@ export default function App() {
         <div style={{ width: `${sidebarWidth}px` }} className="shrink-0 h-full overflow-hidden flex flex-col">
           <Sidebar
             sections={sections}
-            onReorderItem={handleReorderItem}
             activeItem={activeSessionId}
             onSelectItem={(id) => {
-              if (sessions[id]) {
+              if (id.startsWith('file:')) {
+                setActiveFilePath(id.slice(5));
+                setRightPaneMode('editor');
+              } else if (sessions[id]) {
                 setActiveSessionId(id);
                 showToast(`Switched session to ${sessions[id].title}`);
-              } else {
-                setActiveSessionId(id);
               }
             }}
             onNewAgent={() => setIsNewAgentOpen(true)}
@@ -550,13 +972,29 @@ export default function App() {
         <div style={{ width: `${composerWidth}px` }} className="shrink-0 h-full overflow-hidden flex flex-col">
           <ComposerPane
             session={activeSession}
+            models={modelOptions}
+            onModelChange={(model) => {
+              setSessions((prev) => {
+                const s = prev[activeSessionId];
+                if (!s) return prev;
+                return { ...prev, [activeSessionId]: { ...s, model } };
+              });
+            }}
+            attachableFiles={Object.keys(filesRef.current)
+              .sort()
+              .map((name) => ({ name, tokens: Math.max(1, Math.ceil((filesRef.current[name] ?? '').length / 4)) }))}
             onOpenVideoModal={() => setIsVideoModalOpen(true)}
-            onCommitPush={() => showToast('Committed & pushed changes to erik/scm-pane-features')}
+            onCommitPush={() => {
+              void save();
+              setIsVercelDeployOpen(true);
+            }}
             onReviewClick={() => {
               setRightPaneMode('diff');
               showToast('Focusing SCM diff review pane');
             }}
-            onGenerateEdits={handleGenerateEdits}
+            onGenerateEdits={(prompt) => {
+              void runAgentTurn(activeSessionId, prompt);
+            }}
             onRollbackCheckpoint={handleRollbackCheckpoint}
             onOpenRules={() => setIsRulesModalOpen(true)}
             isGenerating={isGenerating}
@@ -582,8 +1020,11 @@ export default function App() {
               onAcceptFile={handleAcceptFile}
               onRevertFile={handleRevertFile}
               onToggleStageFile={handleToggleStageFile}
-              onCreatePR={() => setIsPRStudioOpen(true)}
-              onCommitPush={() => showToast('Committed & pushed changes to erik/scm-pane-features')}
+              onCreatePR={() => setIsPRModalOpen(true)}
+              onCommitPush={() => {
+                void save();
+                setIsVercelDeployOpen(true);
+              }}
               onOpenDeploy={() => setIsVercelDeployOpen(true)}
               onAskComposer={handleAskComposerAboutLine}
               onSwitchToEditor={() => setRightPaneMode('editor')}
@@ -595,15 +1036,29 @@ export default function App() {
               onToggleTerminal={() => setIsTerminalOpen(!isTerminalOpen)}
               isMaximized={isMaximized}
               onToggleMaximize={() => setIsMaximized(!isMaximized)}
+              branchName={projectName}
               theme={theme}
+              terminal={{
+                onCommand: handleTerminalCommand,
+                initialLogs: ['Connected. Type `run [entry]`, `status`, or `help`.'],
+                telemetry,
+                onRefreshTelemetry: () => {},
+                eventLogs: events,
+              }}
             />
           )}
 
           {rightPaneMode === 'editor' && (
             <CodeEditorPane
               files={projectFiles}
-              activeFileId={activeFileId}
-              onSelectFile={(id) => setActiveFileId(id)}
+              activeFileId={activeFilePath}
+              onSelectFile={(id) => setActiveFilePath(id)}
+              onEditFile={(fileId, content) => {
+                setFiles((prev) => ({ ...prev, [fileId]: content }));
+              }}
+              onInlinePrompt={(prompt, fileId) => {
+                void runAgentTurn(activeSessionId, `In ${fileId}: ${prompt}`);
+              }}
               onSwitchToDiff={() => setRightPaneMode('diff')}
               theme={theme}
             />
@@ -611,7 +1066,13 @@ export default function App() {
 
           {rightPaneMode === 'preview' && (
             <LiveAppPreviewPane
-              onInspectElement={handleInspectElement}
+              srcDoc={srcDoc || null}
+              previewLabel={kind === 'web' ? 'preview (sandboxed)' : undefined}
+              onReloadPreview={() => {
+                void rebuildPreview(filesRef.current);
+              }}
+              consoleLines={consoleLines}
+              onInspectElement={() => {}}
               onSwitchToDiff={() => setRightPaneMode('diff')}
               theme={theme}
             />
@@ -619,6 +1080,18 @@ export default function App() {
 
           {rightPaneMode === 'tests' && (
             <TestExplorerPane
+              tests={testRows}
+              onRunAll={() => {
+                const k = detectProjectKind(filesRef.current);
+                if (k === 'web') {
+                  void rebuildPreview(filesRef.current).then(() => {
+                    recordRun('preview rebuild', 0, 0, 'Preview rebuilt.');
+                  });
+                } else {
+                  const entry = findProgramEntry(filesRef.current, k);
+                  void executeEntry(entry).then(() => setRightPaneMode('tests'));
+                }
+              }}
               onAutoFixTest={handleAutoFixTest}
               theme={theme}
             />
@@ -630,22 +1103,107 @@ export default function App() {
       <VideoPreviewModal
         isOpen={isVideoModalOpen}
         onClose={() => setIsVideoModalOpen(false)}
+        title={`${activeSession.title} — screen recording`}
+        videoSrc={videoUrl}
+        onStartCapture={async () => {
+          const md = navigator.mediaDevices as MediaDevices & { getDisplayMedia?: (c?: unknown) => Promise<MediaStream> };
+          if (!md?.getDisplayMedia) throw new Error('Screen capture is not supported in this browser.');
+          const stream = await md.getDisplayMedia({ video: true });
+          showToast('Recording… stop sharing to finish the clip.');
+          const url = await new Promise<string | null>((resolve) => {
+            const rec = new MediaRecorder(stream);
+            const chunks: Blob[] = [];
+            rec.ondataavailable = (e) => {
+              if (e.data.size) chunks.push(e.data);
+            };
+            rec.onstop = () => {
+              stream.getTracks().forEach((t) => t.stop());
+              resolve(chunks.length > 0 ? URL.createObjectURL(new Blob(chunks, { type: rec.mimeType || 'video/webm' })) : null);
+            };
+            stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+              try {
+                if (rec.state !== 'inactive') rec.stop();
+                else resolve(null);
+              } catch {
+                resolve(null);
+              }
+            });
+            rec.start();
+          });
+          if (url) {
+            setVideoUrl(url);
+            setSessions((prev) => {
+              const s = prev[activeSessionId];
+              if (!s) return prev;
+              return { ...prev, [activeSessionId]: { ...s, videoPreview: true } };
+            });
+          }
+          return url;
+        }}
       />
 
       <PRModal
         isOpen={isPRModalOpen}
         onClose={() => setIsPRModalOpen(false)}
-        onSubmit={(title) => {
-          setIsPRModalOpen(false);
-          setIsPRStudioOpen(true);
-          showToast(`Pull Request created: "${title.slice(0, 32)}..."`);
+        onSubmit={(title, description) => {
+          void (async () => {
+            let shareUrl: string | null = null;
+            if (user && brokerEnabled() && projectId) {
+              try {
+                const token = await setProjectShared(projectId, true);
+                if (token) shareUrl = buildShareLink(token);
+              } catch (e) {
+                showToast(`Share failed: ${(e as Error).message}`);
+              }
+            }
+            setPrData({ title: title || `${projectName} review`, description, shareUrl });
+            setIsPRModalOpen(false);
+            setIsPRStudioOpen(true);
+            showToast(shareUrl ? `Review link ready: ${shareUrl}` : 'Review opened (sign in + cloud project for a share link).');
+          })();
         }}
+        baseBranch="main"
+        headBranch={projectName}
+        diffStat={
+          activeFiles.length > 0
+            ? `${activeFiles.length} files changed (+${activeFiles.reduce((a, f) => a + f.additions, 0)}, -${activeFiles.reduce((a, f) => a + f.deletions, 0)})`
+            : 'No changes'
+        }
+        initialTitle={`${projectName} review`}
+        initialDescription=""
       />
 
       <PRReviewStudioModal
         isOpen={isPRStudioOpen}
         onClose={() => setIsPRStudioOpen(false)}
         files={activeFiles}
+        title={prData?.title ?? `${projectName} review`}
+        author={user?.name ?? 'you'}
+        baseBranch="main"
+        headBranch={projectName}
+        commits={listSnapshots()
+          .slice(0, 10)
+          .map((s) => ({
+            hash: s.id.slice(-6),
+            message: `Snapshot ${new Date(s.createdAt).toLocaleString()}`,
+            time: timeAgo(s.createdAt),
+          }))}
+        checks={runs.slice(0, 10).map((r) => ({
+          name: r.label,
+          status: r.exitCode === 0 ? ('passed' as const) : ('failed' as const),
+          time: `${r.durationMs}ms`,
+        }))}
+        comments={[
+          ...(prData?.description.trim()
+            ? [{ author: user?.name ?? 'you', time: 'just now', body: prData.description.trim() }]
+            : []),
+          ...(prData?.shareUrl ? [{ author: 'zut', time: 'just now', body: `Review link: ${prData.shareUrl}` }] : []),
+        ]}
+        onMerge={async () => {
+          takeSnapshot(filesRef.current);
+          logEvent('MERGE', `${activeFiles.length} files merged`);
+          showToast('Changes merged into the workspace.');
+        }}
         onMergeSuccess={() => {
           showToast('Pull Request merged into main branch!');
         }}
@@ -655,24 +1213,74 @@ export default function App() {
       <VercelDeployModal
         isOpen={isVercelDeployOpen}
         onClose={() => setIsVercelDeployOpen(false)}
-        branchName="erik/scm-pane-features"
+        branchName={projectName}
+        onDeploy={async (onLog) => {
+          onLog('Zipping project…');
+          const { url } = await deployStatic(filesRef.current);
+          onLog(`Live at ${url}`);
+          logEvent('DEPLOY', url);
+          return { url };
+        }}
         theme={theme}
       />
 
       <LoginAndAccountModal
         isOpen={isLoginAccountOpen}
-        onClose={() => setIsLoginAccountOpen(false)}
-        currentUser={currentUser}
-        onLoginSuccess={(user) => {
-          setCurrentUser((prev) => ({
-            ...prev,
-            name: user.name,
-            email: user.email,
-          }));
-          showToast(`Signed in as ${user.name}`);
+        onClose={() => {
+          setIsLoginAccountOpen(false);
+          setSignInError(null);
+        }}
+        currentUser={{
+          name: user?.name ?? 'Guest',
+          email: user?.email ?? 'Not signed in',
+          plan: cloudEnabled() ? 'Cloud' : 'Local',
+          avatar: '',
+          fastRequestsUsed: agentUseThisMonth(),
+          fastRequestsLimit: AGENT_MONTHLY_CAP,
+        }}
+        onLoginSuccess={(u) => {
+          setUser(u);
+          showToast(`Signed in as ${u.name}`);
         }}
         onLogout={() => {
-          showToast('Signed out of Cursor');
+          void getSupabase()?.auth.signOut();
+          setUser(null);
+          showToast('Signed out.');
+        }}
+        onProviderSignIn={async (provider, email) => {
+          const sb = getSupabase();
+          if (!sb) throw new Error('Sign-in is not configured (VITE_SUPABASE_URL).');
+          setSignInError(null);
+          if (provider === 'email') {
+            if (!email) throw new Error('Enter an email address.');
+            const { error } = await sb.auth.signInWithOtp({ email });
+            if (error) throw new Error(error.message);
+            throw new Error('Check your email for the sign-in link.');
+          }
+          const { error } = await sb.auth.signInWithOAuth({
+            provider,
+            options: { redirectTo: window.location.origin },
+          });
+          if (error) throw new Error(error.message);
+          return { name: provider, email: '' };
+        }}
+        signInError={signInError}
+        teamLine="Personal workspace"
+        resetLine={`Resets ${new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toLocaleDateString([], { month: 'short', day: 'numeric' })}`}
+        geminiKeySet={geminiKeySet}
+        onSaveGeminiKey={(key) => {
+          setGeminiKey(key);
+          setGeminiKeySet(true);
+          showToast('Gemini key saved in this browser.');
+        }}
+        onClearGeminiKey={() => {
+          try {
+            localStorage.removeItem('gpide:gemini:key');
+          } catch {
+            /* ignore */
+          }
+          setGeminiKeySet(false);
+          showToast('Gemini key removed.');
         }}
         theme={theme}
       />
@@ -681,8 +1289,10 @@ export default function App() {
         isOpen={isRulesModalOpen}
         onClose={() => setIsRulesModalOpen(false)}
         onSaveRules={(rules) => {
-          showToast('Updated .cursorrules guidelines');
+          saveRules(rules);
+          showToast('Project rules saved — the agent follows them on every turn.');
         }}
+        initialRules={loadRules()}
         theme={theme}
       />
 
@@ -692,11 +1302,15 @@ export default function App() {
         onSelectSession={(id) => {
           if (sessions[id]) setActiveSessionId(id);
         }}
+        sessions={Object.values(sessions).map((s) => ({ id: s.id, title: s.title }))}
         onToggleTheme={toggleTheme}
         onToggleDiffMode={() => setDiffViewMode(diffViewMode === 'unified' ? 'split' : 'unified')}
         onToggleTerminal={() => setIsTerminalOpen(!isTerminalOpen)}
-        onCreatePR={() => setIsPRStudioOpen(true)}
-        onCommitPush={() => showToast('Committed & pushed changes')}
+        onCreatePR={() => setIsPRModalOpen(true)}
+        onCommitPush={() => {
+          void save();
+          setIsVercelDeployOpen(true);
+        }}
         onNewAgent={() => setIsNewAgentOpen(true)}
         onOpenDeploy={() => setIsVercelDeployOpen(true)}
         onOpenAccount={() => setIsLoginAccountOpen(true)}
@@ -706,7 +1320,18 @@ export default function App() {
       <NewAgentModal
         isOpen={isNewAgentOpen}
         onClose={() => setIsNewAgentOpen(false)}
-        onSubmit={handleNewAgentSubmit}
+        onSubmit={(prompt, model) => {
+          const newId = `session-${Date.now()}`;
+          const newSession = blankSession(newId, prompt.slice(0, 32) || 'New agent', model);
+          newSession.prompt = prompt;
+          setSessions((prev) => ({ ...prev, [newId]: newSession }));
+          setActiveSessionId(newId);
+          setIsNewAgentOpen(false);
+          setRightPaneMode('diff');
+          showToast(`Started new agent session: "${newSession.title}"`);
+          void runAgentTurn(newId, prompt);
+        }}
+        models={['Gemini 2.5 Flash', 'Gemini 2.5 Pro', ...(cloudEnabled() ? [CLOUD_LABEL] : [])]}
         theme={theme}
       />
 
@@ -719,4 +1344,24 @@ export default function App() {
       )}
     </div>
   );
+
+  async function save(): Promise<void> {
+    if (!user || !brokerEnabled()) {
+      saveDraft(projectName, filesRef.current);
+      showToast('Saved to this device (sign in + broker for cloud save).');
+      return;
+    }
+    try {
+      if (!projectId) {
+        const id = await createProject(projectName, filesRef.current);
+        setProjectId(id);
+      } else {
+        await updateProject(projectId, projectName, filesRef.current);
+      }
+      showToast('Saved to cloud.');
+      logEvent('SAVE', projectName);
+    } catch (e) {
+      showToast(`Save failed: ${(e as Error).message}`);
+    }
+  }
 }

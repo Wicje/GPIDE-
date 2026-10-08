@@ -12,80 +12,79 @@ import {
   TrendingDown,
   Cpu,
 } from 'lucide-react';
-import { INITIAL_BENCHMARK_DATA } from '../data/mockData';
+
+
+export interface RunTelemetry {
+  runs: number;
+  medianMs: number | null;
+  lastExit: number | null;
+  lastAt: string | null;
+}
 
 interface TerminalDrawerProps {
   isOpen: boolean;
   onToggle: () => void;
   theme?: 'light' | 'dark';
+  /** Real command channel: resolves with output lines to print. */
+  onCommand?: (cmd: string) => Promise<string[]>;
+  initialLogs?: string[];
+  /** Real run telemetry (median/last from broker runs). Null = no runs yet. */
+  telemetry?: RunTelemetry | null;
+  onRefreshTelemetry?: () => void;
+  /** Real event log lines. */
+  eventLogs?: string[];
 }
 
 export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
   isOpen,
   onToggle,
   theme = 'light',
+  onCommand,
+  initialLogs,
+  telemetry,
+  onRefreshTelemetry,
+  eventLogs,
 }) => {
   const isDark = theme === 'dark';
   const [activeTab, setActiveTab] = useState<'benchmarks' | 'terminal' | 'logs'>('benchmarks');
-  const [benchmarks, setBenchmarks] = useState(INITIAL_BENCHMARK_DATA);
   const [isBenchmarking, setIsBenchmarking] = useState(false);
-  const [terminalLogs, setTerminalLogs] = useState<string[]>([
-    '❯ vitest run src/components/PaneContainer',
-    '✓ src/components/PaneContainer/PaneTabBar.test.tsx (4 tests) 18ms',
-    '✓ src/hooks/useResizeObserver.test.ts (2 tests) 8ms',
-    '  Test Files  2 passed (2)',
-    '       Tests  6 passed (6)',
-    '    Duration  142ms',
-    '❯ git diff --stat',
-    ' 5 files changed, 98 insertions(+), 20 deletions(-)',
-  ]);
+  const [terminalLogs, setTerminalLogs] = useState<string[]>(
+    () => initialLogs ?? ['Connected. Type `run [entry]`, `status`, `clear`, or `help`.'],
+  );
   const [termInput, setTermInput] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const runBenchmark = () => {
+    if (!onRefreshTelemetry) return;
     setIsBenchmarking(true);
-    setTimeout(() => {
-      const newLatency = Math.floor(38 + Math.random() * 8);
-      setBenchmarks({
-        ...benchmarks,
-        p50Latency: `${newLatency}ms`,
-        keystrokeAbortCount: benchmarks.keystrokeAbortCount + 12,
-      });
-      setIsBenchmarking(false);
-    }, 800);
+    void Promise.resolve()
+      .then(() => onRefreshTelemetry())
+      .catch(() => {})
+      .finally(() => setIsBenchmarking(false));
   };
 
   const handleCommand = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!termInput.trim()) return;
-
     const cmd = termInput.trim();
+    if (!cmd || busy) return;
     setTermInput('');
-    setTerminalLogs((prev) => [...prev, `❯ ${cmd}`]);
-
-    setTimeout(() => {
-      if (cmd.includes('test') || cmd.includes('vitest')) {
+    setTerminalLogs((prev) => [...prev.slice(-200), `❯ ${cmd}`]);
+    if (!onCommand) {
+      setTerminalLogs((prev) => [...prev.slice(-200), 'Terminal is not connected to a runner.']);
+      return;
+    }
+    setBusy(true);
+    void onCommand(cmd)
+      .then((lines) => {
+        setTerminalLogs((prev) => [...prev.slice(-200), ...lines.slice(0, 60)]);
+      })
+      .catch((err: unknown) => {
         setTerminalLogs((prev) => [
-          ...prev,
-          '✓ All tests passing! 6 passed in 118ms.',
+          ...prev.slice(-200),
+          `error: ${(err as Error)?.message ?? 'command failed'}`,
         ]);
-      } else if (cmd.includes('status')) {
-        setTerminalLogs((prev) => [
-          ...prev,
-          'On branch erik/scm-pane-features',
-          'Changes not staged for commit: 5 files',
-        ]);
-      } else if (cmd.includes('bench')) {
-        setTerminalLogs((prev) => [
-          ...prev,
-          'ghost-text pipeline: p50 42ms (-40%), multi-line preview 60fps.',
-        ]);
-      } else {
-        setTerminalLogs((prev) => [
-          ...prev,
-          `command executed successfully: ${cmd}`,
-        ]);
-      }
-    }, 400);
+      })
+      .finally(() => setBusy(false));
   };
 
   return (
@@ -173,20 +172,22 @@ export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="font-semibold text-neutral-800 dark:text-neutral-100">
-                    Ghost-Text Pipeline Telemetry
+                    Run Telemetry
                   </span>
                   <span className="text-[10px] px-1.5 py-0.2 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-full font-medium">
-                    Healthy
+                    {telemetry && telemetry.runs > 0 ? `${telemetry.runs} runs` : 'No runs yet'}
                   </span>
                 </div>
+                {onRefreshTelemetry && (
                 <button
                   onClick={runBenchmark}
                   disabled={isBenchmarking}
                   className="flex items-center gap-1 px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-xs transition-colors text-[11px]"
                 >
                   <Play size={11} className={isBenchmarking ? 'animate-spin' : ''} />
-                  <span>{isBenchmarking ? 'Running...' : 'Run Benchmark'}</span>
+                  <span>{isBenchmarking ? 'Refreshing...' : 'Refresh'}</span>
                 </button>
+                )}
               </div>
 
               {/* Metric Cards Grid */}
@@ -195,14 +196,14 @@ export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
                   isDark ? 'bg-[#202025] border-neutral-700' : 'bg-white border-neutral-200'
                 }`}>
                   <div className="flex items-center justify-between text-neutral-400 text-[10.5px]">
-                    <span>p50 Latency</span>
+                    <span>Median Run</span>
                     <TrendingDown size={12} className="text-emerald-500" />
                   </div>
                   <div className="text-base font-bold text-emerald-600 dark:text-emerald-400 mt-1">
-                    {benchmarks.p50Latency}
+                    {telemetry?.medianMs != null ? `${telemetry.medianMs}ms` : '—'}
                   </div>
                   <div className="text-[10px] text-neutral-400">
-                    Down {benchmarks.latencyReduction} vs baseline
+                    Across broker runs
                   </div>
                 </div>
 
@@ -210,14 +211,14 @@ export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
                   isDark ? 'bg-[#202025] border-neutral-700' : 'bg-white border-neutral-200'
                 }`}>
                   <div className="flex items-center justify-between text-neutral-400 text-[10.5px]">
-                    <span>Preview Render</span>
+                    <span>Total Runs</span>
                     <Zap size={12} className="text-amber-500" />
                   </div>
                   <div className="text-base font-bold text-neutral-800 dark:text-white mt-1">
-                    {benchmarks.previewFps}
+                    {telemetry?.runs ?? 0}
                   </div>
                   <div className="text-[10px] text-neutral-400">
-                    Zero layout shifts
+                    This workspace
                   </div>
                 </div>
 
@@ -225,14 +226,14 @@ export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
                   isDark ? 'bg-[#202025] border-neutral-700' : 'bg-white border-neutral-200'
                 }`}>
                   <div className="flex items-center justify-between text-neutral-400 text-[10.5px]">
-                    <span>Stale Aborts</span>
+                    <span>Last Exit</span>
                     <Clock size={12} className="text-blue-500" />
                   </div>
                   <div className="text-base font-bold text-neutral-800 dark:text-white mt-1">
-                    {benchmarks.keystrokeAbortCount}
+                    {telemetry?.lastExit ?? '—'}
                   </div>
                   <div className="text-[10px] text-neutral-400">
-                    Clean debounce cleanup
+                    0 means success
                   </div>
                 </div>
 
@@ -240,14 +241,14 @@ export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
                   isDark ? 'bg-[#202025] border-neutral-700' : 'bg-white border-neutral-200'
                 }`}>
                   <div className="flex items-center justify-between text-neutral-400 text-[10.5px]">
-                    <span>Memory Footprint</span>
+                    <span>Last Run</span>
                     <Cpu size={12} className="text-purple-500" />
                   </div>
                   <div className="text-base font-bold text-neutral-800 dark:text-white mt-1">
-                    {benchmarks.memoryFootprint}
+                    {telemetry?.lastAt ?? '—'}
                   </div>
                   <div className="text-[10px] text-neutral-400">
-                    Cache hit: {benchmarks.cacheHitRatio}
+                    Local time
                   </div>
                 </div>
               </div>
@@ -279,7 +280,7 @@ export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
                   type="text"
                   value={termInput}
                   onChange={(e) => setTermInput(e.target.value)}
-                  placeholder="type 'test', 'status', 'bench' or any command..."
+                  placeholder="run [entry], status, clear, help…"
                   className="flex-1 bg-transparent focus:outline-none text-neutral-800 dark:text-neutral-100 placeholder-neutral-400"
                 />
               </form>
@@ -288,11 +289,12 @@ export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
 
           {activeTab === 'logs' && (
             <div className="space-y-1 font-code text-[11px] text-neutral-600 dark:text-neutral-400">
-              <div>[18:11:02] [AGENT] Initiated AST parser for PaneTabBar.tsx</div>
-              <div>[18:11:04] [PIPELINE] Detected debounce race condition in useGhostCompletion.ts</div>
-              <div>[18:11:07] [OPTIMIZER] Replaced multi-line token renderer with virtualized range</div>
-              <div>[18:11:09] [BENCHMARK] Suggestion roundtrip: 42.1ms (previous: 70.4ms)</div>
-              <div>[18:11:10] [STATUS] Flag `cursor.ghost_pipeline_v2` activated on nightly</div>
+              {(!eventLogs || eventLogs.length === 0) && (
+                <div className="text-neutral-400">No events yet — runs, saves, and agent turns appear here.</div>
+              )}
+              {(eventLogs ?? []).map((line, i) => (
+                <div key={i}>{line}</div>
+              ))}
             </div>
           )}
         </div>

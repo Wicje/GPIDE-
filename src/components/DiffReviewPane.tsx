@@ -40,9 +40,17 @@ interface DiffReviewPaneProps {
   onToggleDiffViewMode: () => void;
   isTerminalOpen: boolean;
   onToggleTerminal: () => void;
+  terminal?: {
+    onCommand?: (cmd: string) => Promise<string[]>;
+    initialLogs?: string[];
+    telemetry?: import('./TerminalDrawer').RunTelemetry | null;
+    onRefreshTelemetry?: () => void;
+    eventLogs?: string[];
+  };
   isMaximized?: boolean;
   onToggleMaximize?: () => void;
   theme?: 'light' | 'dark';
+  branchName?: string;
 }
 
 export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
@@ -61,15 +69,21 @@ export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
   onToggleDiffViewMode,
   isTerminalOpen,
   onToggleTerminal,
+  terminal,
   isMaximized,
   onToggleMaximize,
   theme = 'light',
+  branchName,
 }) => {
   const isDark = theme === 'dark';
   const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>({});
   const [expandedContext, setExpandedContext] = useState<Record<string, boolean>>({});
-  const [currentBranch, setCurrentBranch] = useState('erik/scm-pane-features');
+  const [currentBranch, setCurrentBranch] = useState(branchName ?? 'workspace');
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
+
+  React.useEffect(() => {
+    if (branchName) setCurrentBranch(branchName);
+  }, [branchName]);
 
   const toggleCollapse = (fileId: string) => {
     setCollapsedFiles((prev) => ({
@@ -224,7 +238,7 @@ export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
                     isDark ? 'bg-[#222228] border-neutral-700 text-neutral-200' : 'bg-white border-neutral-200 text-neutral-700'
                   }`}
                 >
-                  {['erik/scm-pane-features', 'main', 'feat/ghost-text-latency', 'release/v0.42.0'].map(
+                  {[currentBranch, 'main'].filter((b, i, arr) => arr.indexOf(b) === i).map(
                     (b) => (
                       <button
                         key={b}
@@ -464,6 +478,11 @@ export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
         isOpen={isTerminalOpen}
         onToggle={onToggleTerminal}
         theme={theme}
+        onCommand={terminal?.onCommand}
+        initialLogs={terminal?.initialLogs}
+        telemetry={terminal?.telemetry}
+        onRefreshTelemetry={terminal?.onRefreshTelemetry}
+        eventLogs={terminal?.eventLogs}
       />
     </div>
   );

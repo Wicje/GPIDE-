@@ -19,57 +19,50 @@ interface VercelDeployModalProps {
   onClose: () => void;
   branchName?: string;
   theme?: 'light' | 'dark';
+  /** Real deploy channel: streams log lines, resolves with the live URL. */
+  onDeploy?: (onLog: (line: string) => void) => Promise<{ url: string }>;
+  deployError?: string | null;
 }
 
 export const VercelDeployModal: React.FC<VercelDeployModalProps> = ({
   isOpen,
   onClose,
-  branchName = 'erik/scm-pane-features',
+  branchName = 'workspace',
   theme = 'light',
+  onDeploy,
+  deployError,
 }) => {
   const isDark = theme === 'dark';
   const [deployState, setDeployState] = useState<'idle' | 'building' | 'deployed'>('idle');
-  const [currentStep, setCurrentStep] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
+  const [deploymentUrl, setDeploymentUrl] = useState('');
   const [copied, setCopied] = useState(false);
-
-  const deploymentUrl = 'https://cursor-ghost-features.vercel.app';
-
-  const buildSteps = [
-    'Connecting to GitHub (anysphere/cursor-ghost)...',
-    'Pushing commit 8f921d (p50 latency down 40%)...',
-    'Vercel build initiated for production environment...',
-    'Running `npm run build` and TypeScript verification...',
-    'Optimizing static chunks and serverless middleware...',
-    'Deployment published to global edge network!',
-  ];
+  const [error, setError] = useState<string | null>(null);
 
   const handleStartDeploy = () => {
+    if (!onDeploy) {
+      setError('Deploy backend is not configured.');
+      return;
+    }
     setDeployState('building');
-    setCurrentStep(0);
-    setLogs(['[00:00.1] Cloning repository: anysphere/cursor-ghost:8f921d']);
-
-    let step = 0;
-    const interval = setInterval(() => {
-      step++;
-      setCurrentStep(step);
-      if (step < buildSteps.length) {
-        setLogs((prev) => [
-          ...prev,
-          `[00:0${step * 2}.4] ${buildSteps[step]}`,
-        ]);
-      } else {
-        clearInterval(interval);
+    setLogs([]);
+    setError(null);
+    void onDeploy((line) => {
+      setLogs((prev) => [...prev.slice(-200), line]);
+    })
+      .then(({ url }) => {
+        setDeploymentUrl(url);
+        setLogs((prev) => [...prev.slice(-200), `✓ Live at ${url}`]);
         setDeployState('deployed');
-        setLogs((prev) => [
-          ...prev,
-          `✓ Production URL active: ${deploymentUrl}`,
-        ]);
-      }
-    }, 900);
+      })
+      .catch((e: unknown) => {
+        setError((e as Error)?.message ?? 'Deploy failed.');
+        setDeployState('idle');
+      });
   };
 
   const handleCopyUrl = () => {
+    if (!deploymentUrl) return;
     navigator.clipboard?.writeText(deploymentUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -98,11 +91,9 @@ export const VercelDeployModal: React.FC<VercelDeployModalProps> = ({
         >
           <div className="flex items-center gap-2">
             <div className="w-5 h-5 bg-black dark:bg-white rounded flex items-center justify-center text-white dark:text-black">
-              <svg viewBox="0 0 76 65" fill="currentColor" className="w-3 h-3">
-                <path d="M37.5274 0L75.0548 65H0L37.5274 0Z" />
-              </svg>
+              <Globe size={12} />
             </div>
-            <span className="font-semibold text-xs">Vercel & GitHub Deployment Pipeline</span>
+            <span className="font-semibold text-xs">Deploy to the web</span>
           </div>
           <button
             onClick={onClose}
@@ -123,17 +114,15 @@ export const VercelDeployModal: React.FC<VercelDeployModalProps> = ({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 font-mono text-[11px] text-neutral-600 dark:text-neutral-300">
                 <GitBranch size={13} className="text-blue-500" />
-                <span>anysphere/cursor-core</span>
-                <span className="text-neutral-400">/</span>
                 <span className="font-semibold">{branchName}</span>
               </div>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium">
-                Ready for Push
+                Ready to publish
               </span>
             </div>
 
             <p className="text-[11.5px] text-neutral-500">
-              Triggering this flow commits uncommitted ghost-text optimizations and initiates a continuous deployment build on Vercel Edge.
+              Publishes this project to a free live URL. No account needed — share the link when it's done.
             </p>
           </div>
 
@@ -144,17 +133,25 @@ export const VercelDeployModal: React.FC<VercelDeployModalProps> = ({
                 <Zap size={24} />
               </div>
               <div>
-                <h4 className="font-semibold text-sm">Deploy Preview to Vercel</h4>
+                <h4 className="font-semibold text-sm">Publish this project</h4>
                 <p className="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
-                  Automatically runs unit tests, creates an edge deployment preview, and gives you a shareable URL.
+                  Uploads the project and gives you a live shareable URL.
                 </p>
               </div>
 
+              {(error || deployError) && (
+                <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[11px] text-red-600 dark:text-red-400 max-w-sm mx-auto">
+                  {error ?? deployError}
+                </div>
+              )}
+
               <button
                 onClick={handleStartDeploy}
-                className="px-4 py-2 rounded-lg bg-black dark:bg-white text-white dark:text-black font-semibold text-xs shadow-md hover:opacity-90 transition-opacity flex items-center gap-2 mx-auto cursor-pointer"
+                disabled={!onDeploy}
+                className="px-4 py-2 rounded-lg bg-black dark:bg-white text-white dark:text-black font-semibold text-xs shadow-md hover:opacity-90 transition-opacity flex items-center gap-2 mx-auto cursor-pointer disabled:opacity-40"
+                title={onDeploy ? 'Publish now' : 'Deploy backend is not configured'}
               >
-                <span>Push to GitHub & Deploy to Vercel</span>
+                <span>Publish live URL</span>
                 <ArrowRight size={13} />
               </button>
             </div>
@@ -166,18 +163,9 @@ export const VercelDeployModal: React.FC<VercelDeployModalProps> = ({
               <div className="flex items-center justify-between text-xs font-medium">
                 <div className="flex items-center gap-2">
                   <Loader2 size={14} className="animate-spin text-blue-500" />
-                  <span>Deploying to Vercel ({currentStep + 1}/{buildSteps.length})</span>
+                  <span>Publishing…</span>
                 </div>
-                <span className="font-mono text-neutral-400">
-                  {Math.round(((currentStep + 1) / buildSteps.length) * 100)}%
-                </span>
-              </div>
-
-              <div className="w-full h-1.5 bg-neutral-200 dark:bg-neutral-800 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-blue-600 rounded-full transition-all duration-500"
-                  style={{ width: `${((currentStep + 1) / buildSteps.length) * 100}%` }}
-                />
+                <span className="font-mono text-neutral-400">{logs.length} log lines</span>
               </div>
 
               {/* Terminal Logs Box */}
@@ -201,7 +189,7 @@ export const VercelDeployModal: React.FC<VercelDeployModalProps> = ({
                 <div className="leading-tight">
                   <div className="font-semibold text-xs">Deployment Complete!</div>
                   <div className="text-[11px] opacity-80">
-                    Preview environment is live on the Vercel Edge network.
+                    Your project is live at the URL below.
                   </div>
                 </div>
               </div>

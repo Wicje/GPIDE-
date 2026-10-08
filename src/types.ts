@@ -55,7 +55,7 @@ export interface AgentStep {
   id: string;
   type: 'search' | 'grep' | 'read' | 'edit' | 'test';
   query: string;
-  status: 'pending' | 'running' | 'completed';
+  status: 'pending' | 'running' | 'completed' | 'failed';
   durationMs?: number;
   matches?: AgentStepMatch[];
   details?: string;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   GitBranch,
   PanelRightClose,
@@ -23,6 +23,7 @@ import {
   Brain,
   Pause,
   X,
+  XCircle,
 } from 'lucide-react';
 import { SessionData, AgentStep, AgentPhase, ToolApprovalRequest, AttachedContext } from '../types';
 import screenRecThumb from '../assets/images/screen_recording_thumb_1791421930526.jpg';
@@ -37,6 +38,11 @@ interface ComposerPaneProps {
   onOpenRules?: () => void;
   isGenerating?: boolean;
   theme?: 'light' | 'dark';
+  /** Real model options (defaults to the built-in list). */
+  models?: string[];
+  onModelChange?: (model: string) => void;
+  /** Real attachable files for @ mentions. */
+  attachableFiles?: Array<{ name: string; tokens: number }>;
 }
 
 export const ComposerPane: React.FC<ComposerPaneProps> = ({
@@ -49,50 +55,51 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
   onOpenRules,
   isGenerating = false,
   theme = 'light',
+  models,
+  onModelChange,
+  attachableFiles,
 }) => {
   const isDark = theme === 'dark';
+  const modelOptions = models ?? ['Composer 2.5 Fast', 'Claude 3.7 Sonnet', 'GPT-4.5 Preview', 'Claude 3.5 Haiku'];
   const [copied, setCopied] = useState(false);
   const [followUpText, setFollowUpText] = useState('');
-  const [selectedModel, setSelectedModel] = useState(session.model || 'Composer 2.5 Fast');
+  const [selectedModel, setSelectedModel] = useState(session.model || modelOptions[0]);
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const [isVoiceRecording, setIsVoiceRecording] = useState(false);
-  const [expandedStepId, setExpandedStepId] = useState<string | null>('s-1');
 
-  // Extended Thinking / Chain of Thought Drawer
-  const [isThinkingOpen, setIsThinkingOpen] = useState(true);
+  interface VoiceRecognizer {
+    interimResults: boolean;
+    onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+    onend: (() => void) | null;
+    onerror: (() => void) | null;
+    start: () => void;
+    stop: () => void;
+  }
+
+  const voiceRecRef = useRef<VoiceRecognizer | null>(null);
+  const [expandedStepId, setExpandedStepId] = useState<string | null>(null);
 
   // Agentic Loop State
   const [isExecutionGraphOpen, setIsExecutionGraphOpen] = useState(false);
-  const [isAgentPaused, setIsAgentPaused] = useState(false);
 
-  // Attached Context Chips
-  const [attachedContexts, setAttachedContexts] = useState<AttachedContext[]>([
-    { id: 'c-1', name: 'PaneTabBar.tsx', type: 'file', tokens: 420 },
-    { id: 'c-2', name: 'git-diff', type: 'git', tokens: 180 },
-  ]);
+  // Attached Context Chips (start empty; files attach from the @ menu)
+  const [attachedContexts, setAttachedContexts] = useState<AttachedContext[]>([]);
   const [isMentionMenuOpen, setIsMentionMenuOpen] = useState(false);
-
-  // Tool Approval Gate State
-  const [approvalRequest, setApprovalRequest] = useState<ToolApprovalRequest | null>({
-    id: 'req-1',
-    tool: 'bash',
-    command: 'npm install @tanstack/react-virtual --save',
-    riskLevel: 'medium',
-    status: 'pending',
-  });
-
-  const agentPhases: AgentPhase[] = [
-    { id: 'p-1', name: 'Discovery & Symbol Indexing', status: 'completed', duration: '14ms', tokens: 320, details: 'Indexed 14 AST files in PaneContainer' },
-    { id: 'p-2', name: 'Reproduction & Benchmark Profiling', status: 'completed', duration: '42ms', tokens: 410, details: 'Detected cancellation race in useGhostCompletion' },
-    { id: 'p-3', name: 'Multi-File Code Synthesis', status: 'completed', duration: '98ms', tokens: 690, details: 'Synthesized 5 files (+98, -20)' },
-    { id: 'p-4', name: 'Regression Suite & Vitest Run', status: isGenerating ? 'running' : 'queued', duration: 'Pending', tokens: 0, details: 'Verifying tests across test explorer' },
-  ];
 
   useEffect(() => {
     if (session.model) {
       setSelectedModel(session.model);
+    } else if (modelOptions[0] && !modelOptions.includes(selectedModel)) {
+      setSelectedModel(modelOptions[0]);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id, session.model]);
+
+  function pickModel(model: string) {
+    setSelectedModel(model);
+    setIsModelDropdownOpen(false);
+    onModelChange?.(model);
+  }
 
   const handleCopySummary = () => {
     navigator.clipboard?.writeText(session.summary);
@@ -109,15 +116,34 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
     onGenerateEdits(userText);
   };
 
+  const speechCtor: (new () => VoiceRecognizer) | null =
+    typeof window !== 'undefined'
+      ? (window as unknown as { SpeechRecognition?: new () => VoiceRecognizer; webkitSpeechRecognition?: new () => VoiceRecognizer }).SpeechRecognition ??
+        (window as unknown as { webkitSpeechRecognition?: new () => VoiceRecognizer }).webkitSpeechRecognition ??
+        null
+      : null;
+
   const toggleVoice = () => {
     if (isVoiceRecording) {
+      voiceRecRef.current?.stop();
       setIsVoiceRecording(false);
-    } else {
+      return;
+    }
+    if (!speechCtor) return;
+    try {
+      const rec = new speechCtor();
+      voiceRecRef.current = rec;
+      rec.interimResults = false;
+      rec.onresult = (e) => {
+        const t = e.results[0]?.[0]?.transcript ?? '';
+        if (t) setFollowUpText((v) => (v ? `${v} ${t}` : t));
+      };
+      rec.onend = () => setIsVoiceRecording(false);
+      rec.onerror = () => setIsVoiceRecording(false);
+      rec.start();
       setIsVoiceRecording(true);
-      setTimeout(() => {
-        setFollowUpText('Add telemetry event for accepted completions and track p95 latency');
-        setIsVoiceRecording(false);
-      }, 2400);
+    } catch {
+      setIsVoiceRecording(false);
     }
   };
 
@@ -125,11 +151,14 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
     setExpandedStepId((prev) => (prev === stepId ? null : stepId));
   };
 
-  const addMentionContext = (name: string, type: 'file' | 'git' | 'doc') => {
-    setAttachedContexts((prev) => [
-      ...prev,
-      { id: `c-${Date.now()}`, name, type, tokens: 240 },
-    ]);
+  const addMentionContext = (name: string, type: 'file' | 'git' | 'doc', tokens?: number) => {
+    setAttachedContexts((prev) => {
+      if (prev.some((c) => c.name === name)) {
+        setIsMentionMenuOpen(false);
+        return prev;
+      }
+      return [...prev, { id: `c-${Date.now()}`, name, type, tokens: tokens ?? 0 }];
+    });
     setIsMentionMenuOpen(false);
   };
 
@@ -179,46 +208,20 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
               : 'bg-[#f8f8fa] border-[#e5e5e8] text-neutral-800'
           }`}
         >
-          {session.prompt}
+          {session.prompt || <span className="text-neutral-400">New agent — send a prompt below to begin.</span>}
         </div>
 
-        {/* Feature 5: Collapsible Extended Chain-of-Thought (Frontier Thinking Drawer) */}
-        <div
-          className={`rounded-xl border overflow-hidden transition-all ${
-            isDark ? 'bg-[#1c1c22] border-neutral-700/80' : 'bg-neutral-50/80 border-neutral-200'
-          }`}
-        >
+        {/* Live working indicator (only while the agent runs) */}
+        {isGenerating && (
           <div
-            onClick={() => setIsThinkingOpen(!isThinkingOpen)}
-            className="px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-neutral-500/5 select-none"
+            className={`rounded-xl border px-3 py-2 flex items-center gap-2 text-xs ${
+              isDark ? 'bg-[#1c1c22] border-neutral-700/80' : 'bg-neutral-50/80 border-neutral-200'
+            }`}
           >
-            <div className="flex items-center gap-2 text-xs">
-              <Brain size={14} className="text-purple-500 shrink-0" />
-              <span className="font-semibold text-neutral-800 dark:text-neutral-200">
-                Thought for 14 seconds
-              </span>
-            </div>
-
-            <div className="flex items-center gap-1 text-neutral-400">
-              <span className="text-[10px] font-mono">CoT</span>
-              {isThinkingOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-            </div>
+            <Loader2 size={13} className="text-blue-500 animate-spin shrink-0" />
+            <span className="text-neutral-600 dark:text-neutral-300">Agent working… steps appear below as they complete.</span>
           </div>
-
-          {isThinkingOpen && (
-            <div className="px-3 pb-3 pt-1 border-t border-neutral-200/50 dark:border-neutral-800/80 font-mono text-[11px] leading-relaxed text-neutral-600 dark:text-neutral-400 space-y-1.5 animate-fadeIn">
-              <div className="text-purple-600 dark:text-purple-400 font-semibold">
-                &gt; Analyzing ghost-text suggestion rendering path...
-              </div>
-              <div className="pl-2 border-l border-neutral-300 dark:border-neutral-700 space-y-1">
-                <div>• Parsed AST for PaneTabBar.tsx and useGhostCompletion.ts.</div>
-                <div>• Identified concurrency bug: keystroke handler dispatches async query without invalidating prior promise.</div>
-                <div>• Solution: Bind AbortController signal; replace multi-line overlay with inline virtualized range.</div>
-                <div>• Benchmark verification: p50 latency down 40% (42ms vs 70ms baseline). Zero layout shift observed.</div>
-              </div>
-            </div>
-          )}
-        </div>
+        )}
 
         {/* Autonomous Multi-Phase Execution Graph */}
         <div
@@ -232,25 +235,29 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
           >
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="font-semibold text-xs tracking-tight">Agent Execution Graph</span>
-              <span className="text-[10px] text-neutral-400 font-mono">DAG (4 Phases)</span>
+              <span className="font-semibold text-xs tracking-tight">Activity</span>
+              <span className="text-[10px] text-neutral-400 font-mono">({session.steps.length} steps)</span>
             </div>
 
             <div className="flex items-center gap-2 text-neutral-400">
-              <span className="text-[10px] font-mono">1.4k tok</span>
               {isExecutionGraphOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
             </div>
           </div>
 
           {isExecutionGraphOpen && (
             <div className="p-3 space-y-2 text-xs">
-              {agentPhases.map((phase) => (
-                <div key={phase.id} className="flex items-start gap-2.5">
+              {session.steps.length === 0 && (
+                <p className="text-[11px] text-neutral-400">No activity yet — send a prompt below.</p>
+              )}
+              {session.steps.map((step) => (
+                <div key={step.id} className="flex items-start gap-2.5">
                   <div className="mt-0.5 shrink-0">
-                    {phase.status === 'completed' ? (
+                    {step.status === 'completed' ? (
                       <CheckCircle2 size={13} className="text-emerald-500" />
-                    ) : phase.status === 'running' ? (
+                    ) : step.status === 'running' ? (
                       <Loader2 size={13} className="text-blue-500 animate-spin" />
+                    ) : step.status === 'failed' ? (
+                      <XCircle size={13} className="text-red-500" />
                     ) : (
                       <Clock size={13} className="text-neutral-400" />
                     )}
@@ -258,80 +265,34 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between text-[11.5px]">
-                      <span className={`font-medium ${phase.status === 'completed' ? 'text-neutral-700 dark:text-neutral-300' : 'text-blue-500 font-semibold'}`}>
-                        {phase.name}
+                      <span className={`font-medium capitalize ${step.status === 'completed' ? 'text-neutral-700 dark:text-neutral-300' : 'text-blue-500 font-semibold'}`}>
+                        {step.type}: {step.query.length > 48 ? `${step.query.slice(0, 48)}…` : step.query}
                       </span>
-                      <span className="text-[10px] font-mono text-neutral-400">{phase.duration}</span>
+                      {step.durationMs != null && (
+                        <span className="text-[10px] font-mono text-neutral-400">{step.durationMs}ms</span>
+                      )}
                     </div>
-                    <div className="text-[11px] text-neutral-400 truncate">{phase.details}</div>
+                    {step.details && <div className="text-[11px] text-neutral-400 truncate">{step.details}</div>}
                   </div>
                 </div>
               ))}
 
-              <div className="flex items-center justify-between pt-2 border-t border-neutral-200/60 dark:border-neutral-700 text-[11px]">
-                <div className="text-neutral-400 font-mono text-[10.5px]">
-                  Compute: 3.8s • $0.003
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => setIsAgentPaused(!isAgentPaused)}
-                    className="px-2 py-0.5 rounded border border-neutral-300 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
-                  >
-                    {isAgentPaused ? 'Resume' : 'Pause'}
-                  </button>
-                  <button
-                    onClick={() => onGenerateEdits('Verify debounce cleanup')}
-                    className="px-2 py-0.5 rounded bg-blue-600 text-white font-medium hover:bg-blue-500 cursor-pointer"
-                  >
-                    Step-Over
-                  </button>
-                </div>
+              <div className="flex items-center justify-end pt-2 border-t border-neutral-200/60 dark:border-neutral-700 text-[11px]">
+                <button
+                  onClick={() => onGenerateEdits('Review your last changes for issues and fix what you find')}
+                  className="px-2 py-0.5 rounded bg-blue-600 text-white font-medium hover:bg-blue-500 cursor-pointer"
+                >
+                  Verify
+                </button>
               </div>
             </div>
           )}
         </div>
 
-        {/* Tool Approval Gate */}
-        {approvalRequest && approvalRequest.status === 'pending' && (
-          <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-xs space-y-2 animate-fadeIn">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 font-semibold text-amber-700 dark:text-amber-400">
-                <AlertTriangle size={14} />
-                <span>Tool Approval Required</span>
-              </div>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-800 dark:text-amber-300 font-mono font-medium">
-                {approvalRequest.riskLevel.toUpperCase()} RISK
-              </span>
-            </div>
-
-            <p className="text-[11.5px] text-neutral-700 dark:text-neutral-300">
-              Agent requested permission to execute shell tool:
-            </p>
-            <div className="p-2 rounded bg-black/60 text-white font-code text-[11px] truncate">
-              {approvalRequest.command}
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <button
-                onClick={() => setApprovalRequest(null)}
-                className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-[11px]"
-              >
-                Reject
-              </button>
-              <button
-                onClick={() => {
-                  setApprovalRequest({ ...approvalRequest, status: 'approved' });
-                  onGenerateEdits('Installed @tanstack/react-virtual');
-                }}
-                className="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white font-medium text-[11px] shadow-xs cursor-pointer"
-              >
-                Allow Once
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Action Steps */}
+        {session.steps.length === 0 && !isGenerating && (
+          <p className="text-[12px] text-neutral-400 px-1">No activity yet — send a prompt below to start the agent.</p>
+        )}
         <div className="space-y-1.5 text-[12.5px]">
           {session.steps.map((step) => {
             const isExpanded = expandedStepId === step.id;
@@ -470,6 +431,7 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
         )}
 
         {/* Summary Card */}
+        {session.summary && (
         <div className="pt-1">
           <h4 className={`font-semibold text-[13px] mb-1 ${isDark ? 'text-white' : 'text-neutral-900'}`}>
             Summary
@@ -491,6 +453,7 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
             </button>
           </div>
         </div>
+        )}
       </div>
 
       {/* Bottom Controls, Context Chips & Follow-up Input */}
@@ -581,30 +544,20 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
                 <div className="px-2.5 py-1 text-[10px] font-semibold text-neutral-400 uppercase">
                   Attach Context
                 </div>
-                <button
-                  type="button"
-                  onClick={() => addMentionContext('PaneTabBar.tsx', 'file')}
-                  className="w-full text-left px-2.5 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center justify-between"
-                >
-                  <span>@PaneTabBar.tsx</span>
-                  <span className="text-neutral-400 text-[10px]">file</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => addMentionContext('useResizeObserver.ts', 'file')}
-                  className="w-full text-left px-2.5 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center justify-between"
-                >
-                  <span>@useResizeObserver.ts</span>
-                  <span className="text-neutral-400 text-[10px]">file</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => addMentionContext('git-diff', 'git')}
-                  className="w-full text-left px-2.5 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center justify-between"
-                >
-                  <span>@git-diff</span>
-                  <span className="text-neutral-400 text-[10px]">git</span>
-                </button>
+                {(attachableFiles ?? []).length === 0 && (
+                  <div className="px-2.5 py-1 text-neutral-400">No files in this project yet.</div>
+                )}
+                {(attachableFiles ?? []).map((f) => (
+                  <button
+                    key={f.name}
+                    type="button"
+                    onClick={() => addMentionContext(f.name, 'file', f.tokens)}
+                    className="w-full text-left px-2.5 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center justify-between"
+                  >
+                    <span>@{f.name}</span>
+                    <span className="text-neutral-400 text-[10px]">file</span>
+                  </button>
+                ))}
               </div>
             )}
           </div>
@@ -640,15 +593,12 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
                   isDark ? 'bg-[#222228] border-neutral-700 text-neutral-200' : 'bg-white border-neutral-200 text-neutral-700'
                 }`}
               >
-                {['Composer 2.5 Fast', 'Claude 3.7 Sonnet', 'GPT-4.5 Preview', 'Claude 3.5 Haiku'].map(
+                {modelOptions.map(
                   (model) => (
                     <button
                       key={model}
                       type="button"
-                      onClick={() => {
-                        setSelectedModel(model);
-                        setIsModelDropdownOpen(false);
-                      }}
+                      onClick={() => pickModel(model)}
                       className={`w-full text-left px-3 py-1.5 flex items-center justify-between cursor-pointer ${
                         isDark ? 'hover:bg-neutral-800' : 'hover:bg-neutral-100'
                       } ${selectedModel === model ? 'font-medium text-blue-500' : ''}`}
@@ -662,7 +612,8 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
             )}
           </div>
 
-          {/* Mic / send action button */}
+          {/* Mic / send action button (mic hidden where speech input is unsupported) */}
+          {(followUpText || speechCtor) && (
           <button
             type="button"
             onClick={followUpText ? handleSendFollowUp : toggleVoice}
@@ -684,6 +635,7 @@ export const ComposerPane: React.FC<ComposerPaneProps> = ({
               <Mic size={12} />
             )}
           </button>
+          )}
         </form>
       </div>
     </div>

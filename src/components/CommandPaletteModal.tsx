@@ -36,6 +36,7 @@ interface CommandPaletteModalProps {
   onOpenDeploy?: () => void;
   onOpenAccount?: () => void;
   theme?: 'light' | 'dark';
+  sessions?: Array<{ id: string; title: string }>;
 }
 
 export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
@@ -51,6 +52,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
   onOpenDeploy,
   onOpenAccount,
   theme = 'light',
+  sessions,
 }) => {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -145,46 +147,16 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
         onClose();
       },
     },
-    {
-      id: 'session-ghost',
-      title: 'Jump to Session: Composer ghost',
+    ...(sessions ?? []).map((s) => ({
+      id: `session-${s.id}`,
+      title: `Jump to Session: ${s.title}`,
       category: 'Sessions',
       icon: <Layers size={14} className="text-neutral-500" />,
       action: () => {
-        onSelectSession('composer-ghost');
+        onSelectSession(s.id);
         onClose();
       },
-    },
-    {
-      id: 'session-reorder',
-      title: 'Jump to Session: Sidebar reorderable',
-      category: 'Sessions',
-      icon: <Layers size={14} className="text-neutral-500" />,
-      action: () => {
-        onSelectSession('sidebar-reorderable');
-        onClose();
-      },
-    },
-    {
-      id: 'session-agentic',
-      title: 'Jump to Session: Agentic chat',
-      category: 'Sessions',
-      icon: <Layers size={14} className="text-neutral-500" />,
-      action: () => {
-        onSelectSession('agentic-chat');
-        onClose();
-      },
-    },
-    {
-      id: 'session-landing',
-      title: 'Jump to Session: cursor.com landing refresh',
-      category: 'Sessions',
-      icon: <Layers size={14} className="text-neutral-500" />,
-      action: () => {
-        onSelectSession('cursor-landing');
-        onClose();
-      },
-    },
+    })),
   ];
 
   const filteredItems = items.filter(

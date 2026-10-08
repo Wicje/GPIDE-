@@ -4,14 +4,33 @@ import { X, GitPullRequest, Check } from 'lucide-react';
 interface PRModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (title: string) => void;
+  onSubmit: (title: string, description: string) => void;
+  baseBranch?: string;
+  headBranch?: string;
+  diffStat?: string;
+  initialTitle?: string;
+  initialDescription?: string;
 }
 
-export const PRModal: React.FC<PRModalProps> = ({ isOpen, onClose, onSubmit }) => {
-  const [prTitle, setPrTitle] = useState('feat(ghost-text): rewrite pipeline and reduce latency by 40%');
-  const [prDesc, setPrDesc] = useState(
-    'Addresses latency issues in multi-line completions and ensures proper cancellation on rapid typing. Tests added in `PaneTabBar.test.tsx`.'
-  );
+export const PRModal: React.FC<PRModalProps> = ({
+  isOpen,
+  onClose,
+  onSubmit,
+  baseBranch = 'main',
+  headBranch,
+  diffStat,
+  initialTitle = '',
+  initialDescription = '',
+}) => {
+  const [prTitle, setPrTitle] = useState(initialTitle);
+  const [prDesc, setPrDesc] = useState(initialDescription);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      setPrTitle(initialTitle);
+      setPrDesc(initialDescription);
+    }
+  }, [isOpen, initialTitle, initialDescription]);
 
   if (!isOpen) return null;
 
@@ -39,9 +58,9 @@ export const PRModal: React.FC<PRModalProps> = ({ isOpen, onClose, onSubmit }) =
 
         <div className="p-4 space-y-3.5 text-xs">
           <div className="flex items-center gap-2 p-2 bg-neutral-100 rounded-lg text-neutral-600 font-mono text-[11px]">
-            <span className="font-semibold text-neutral-800">base:</span> main
+            <span className="font-semibold text-neutral-800">base:</span> {baseBranch}
             <span className="text-neutral-400">←</span>
-            <span className="font-semibold text-neutral-800">compare:</span> erik/scm-pane-features
+            <span className="font-semibold text-neutral-800">compare:</span> {headBranch ?? 'workspace'}
           </div>
 
           <div>
@@ -70,7 +89,7 @@ export const PRModal: React.FC<PRModalProps> = ({ isOpen, onClose, onSubmit }) =
 
           <div className="flex items-center justify-between pt-2 border-t border-neutral-200">
             <div className="text-[11px] text-neutral-500">
-              5 files changed (+98, -20)
+              {diffStat ?? 'No changes'}
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -82,7 +101,7 @@ export const PRModal: React.FC<PRModalProps> = ({ isOpen, onClose, onSubmit }) =
               </button>
               <button
                 type="button"
-                onClick={() => onSubmit(prTitle)}
+                onClick={() => onSubmit(prTitle, prDesc)}
                 className="px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-black text-white font-medium shadow-sm transition-colors flex items-center gap-1.5"
               >
                 <Check size={14} />

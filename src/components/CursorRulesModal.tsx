@@ -6,21 +6,28 @@ interface CursorRulesModalProps {
   onClose: () => void;
   onSaveRules: (rules: string) => void;
   theme?: 'light' | 'dark';
+  initialRules?: string;
 }
+
+const DEFAULT_RULES = `# Project Agent Rules
+- Always write strict TypeScript with exact return types. Never use \`any\`.
+- Use Tailwind CSS v4 utility classes. Avoid inline styles and separate CSS files.
+- Prefer functional components and React hooks.`;
 
 export const CursorRulesModal: React.FC<CursorRulesModalProps> = ({
   isOpen,
   onClose,
   onSaveRules,
   theme = 'light',
+  initialRules,
 }) => {
   const isDark = theme === 'dark';
-  const [rules, setRules] = useState<string>(`# Cursor AI Project Rules (.cursorrules)
-- Always write strict TypeScript with exact return types. Never use \`any\`.
-- Use Tailwind CSS v4 utility classes. Avoid inline styles and separate CSS files.
-- Prefer functional components and React 19 hooks.
-- Keep ghost-text suggestion latency strictly under 40ms.
-- Before committing, always run Vitest test suites.`);
+  const [rules, setRules] = useState<string>(initialRules ?? DEFAULT_RULES);
+  const directiveCount = rules.split('\n').filter((l) => l.trim().startsWith('-')).length;
+
+  React.useEffect(() => {
+    if (isOpen && initialRules !== undefined) setRules(initialRules);
+  }, [isOpen, initialRules]);
 
   if (!isOpen) return null;
 
@@ -69,7 +76,7 @@ export const CursorRulesModal: React.FC<CursorRulesModalProps> = ({
 
           <div className="flex items-center justify-between pt-2 border-t border-neutral-200 dark:border-neutral-800">
             <span className="text-[11px] text-neutral-400">
-              5 project directives active
+              {directiveCount} project directive{directiveCount === 1 ? '' : 's'} active
             </span>
 
             <div className="flex items-center gap-2">

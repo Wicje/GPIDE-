@@ -15,12 +15,40 @@ import {
 } from 'lucide-react';
 import { DiffFile } from '../types';
 
+export interface PRCommit {
+  hash: string;
+  message: string;
+  time: string;
+}
+
+export interface PRCheck {
+  name: string;
+  status: 'passed' | 'failed' | 'running';
+  time: string;
+}
+
+export interface PRComment {
+  author: string;
+  time: string;
+  body: string;
+}
+
 interface PRReviewStudioModalProps {
   isOpen: boolean;
   onClose: () => void;
   files: DiffFile[];
   onMergeSuccess?: () => void;
   theme?: 'light' | 'dark';
+  title?: string;
+  prNumber?: number;
+  author?: string;
+  baseBranch?: string;
+  headBranch?: string;
+  commits?: PRCommit[];
+  checks?: PRCheck[];
+  comments?: PRComment[];
+  /** Real merge channel. Resolves when the merge lands. */
+  onMerge?: () => Promise<void>;
 }
 
 export const PRReviewStudioModal: React.FC<PRReviewStudioModalProps> = ({
@@ -29,30 +57,43 @@ export const PRReviewStudioModal: React.FC<PRReviewStudioModalProps> = ({
   files,
   onMergeSuccess,
   theme = 'light',
+  title,
+  prNumber,
+  author,
+  baseBranch = 'main',
+  headBranch,
+  commits = [],
+  checks = [],
+  comments = [],
+  onMerge,
 }) => {
   const isDark = theme === 'dark';
   const [activeTab, setActiveTab] = useState<'conversation' | 'commits' | 'checks' | 'files'>('conversation');
   const [prStatus, setPrStatus] = useState<'open' | 'merged'>('open');
   const [reviewDecision, setReviewDecision] = useState<'approved' | null>(null);
   const [isReviewMenuOpen, setIsReviewMenuOpen] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const [mergeError, setMergeError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const commits = [
-    { hash: '8f921d', message: 'refactor(ghost-text): replace stale completion with AbortController', time: '18 min ago' },
-    { hash: '3a180b', message: 'feat(pane): add multi-line token highlight rendering', time: '14 min ago' },
-    { hash: 'c49a12', message: 'test: add unit tests for tab dimensions and compact bar', time: '8 min ago' },
-  ];
-
-  const checks = [
-    { name: 'Vercel Preview Deployment', status: 'passed', time: '34s' },
-    { name: 'TypeScript Strict Checking (tsc)', status: 'passed', time: '12s' },
-    { name: 'Vitest Unit Suite (6 tests)', status: 'passed', time: '18ms' },
-  ];
-
   const handleMerge = () => {
-    setPrStatus('merged');
-    if (onMergeSuccess) onMergeSuccess();
+    if (!onMerge) {
+      setPrStatus('merged');
+      if (onMergeSuccess) onMergeSuccess();
+      return;
+    }
+    setMerging(true);
+    setMergeError(null);
+    void onMerge()
+      .then(() => {
+        setPrStatus('merged');
+        if (onMergeSuccess) onMergeSuccess();
+      })
+      .catch((e: unknown) => {
+        setMergeError((e as Error)?.message ?? 'Merge failed.');
+      })
+      .finally(() => setMerging(false));
   };
 
   return (
@@ -86,16 +127,17 @@ export const PRReviewStudioModal: React.FC<PRReviewStudioModalProps> = ({
                   <span className="capitalize">{prStatus}</span>
                 </span>
                 <h3 className="font-bold text-sm">
-                  feat(ghost-text): rewrite pipeline and reduce latency by 40% <span className="text-neutral-400">#412</span>
+                  {title ?? 'Review workspace changes'}{' '}
+                  {prNumber != null && <span className="text-neutral-400">#{prNumber}</span>}
                 </h3>
               </div>
 
               <div className="text-[11.5px] text-neutral-500 flex items-center gap-1.5 font-mono">
-                <span className="font-sans font-medium text-neutral-800 dark:text-neutral-200">sualeh-asif</span>
-                <span>wants to merge 3 commits into</span>
-                <span className="bg-neutral-200/80 dark:bg-neutral-800 px-1.5 py-0.2 rounded text-[11px]">main</span>
+                <span className="font-sans font-medium text-neutral-800 dark:text-neutral-200">{author ?? 'you'}</span>
+                <span>wants to merge {commits.length} commit{commits.length === 1 ? '' : 's'} into</span>
+                <span className="bg-neutral-200/80 dark:bg-neutral-800 px-1.5 py-0.2 rounded text-[11px]">{baseBranch}</span>
                 <span>from</span>
-                <span className="bg-neutral-200/80 dark:bg-neutral-800 px-1.5 py-0.2 rounded text-[11px]">erik/scm-pane-features</span>
+                <span className="bg-neutral-200/80 dark:bg-neutral-800 px-1.5 py-0.2 rounded text-[11px]">{headBranch ?? 'workspace'}</span>
               </div>
             </div>
 
@@ -130,7 +172,7 @@ export const PRReviewStudioModal: React.FC<PRReviewStudioModalProps> = ({
               }`}
             >
               <GitCommit size={13} />
-              <span>Commits (3)</span>
+              <span>Commits ({commits.length})</span>
             </button>
 
             <button
@@ -142,7 +184,7 @@ export const PRReviewStudioModal: React.FC<PRReviewStudioModalProps> = ({
               }`}
             >
               <CheckCircle2 size={13} className="text-emerald-500" />
-              <span>Checks (3)</span>
+              <span>Checks ({checks.length})</span>
             </button>
 
             <button
@@ -163,26 +205,40 @@ export const PRReviewStudioModal: React.FC<PRReviewStudioModalProps> = ({
         <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
           {activeTab === 'conversation' && (
             <div className="space-y-3">
-              {/* Review Comment 1 */}
-              <div className="p-3 rounded-xl border border-neutral-200 dark:border-neutral-700 space-y-2">
-                <div className="flex items-center justify-between text-neutral-500 text-[11px]">
-                  <span className="font-semibold text-neutral-800 dark:text-neutral-200">
-                    Erik (Lead Core Engineer)
-                  </span>
-                  <span>12m ago</span>
+              {comments.length === 0 && (
+                <p className="text-xs text-neutral-500">No review comments yet.</p>
+              )}
+              {comments.map((c, i) => (
+                <div key={i} className="p-3 rounded-xl border border-neutral-200 dark:border-neutral-700 space-y-2">
+                  <div className="flex items-center justify-between text-neutral-500 text-[11px]">
+                    <span className="font-semibold text-neutral-800 dark:text-neutral-200">
+                      {c.author}
+                    </span>
+                    <span>{c.time}</span>
+                  </div>
+                  <p className="text-xs leading-relaxed text-neutral-700 dark:text-neutral-300">
+                    {c.body}
+                  </p>
                 </div>
-                <p className="text-xs leading-relaxed text-neutral-700 dark:text-neutral-300">
-                  Great work on the cancellation race! The debounce cleanup handles 60fps rapid typing without stale completion flickers. Verified on nightly builds.
-                </p>
-              </div>
+              ))}
 
               {/* Automated Checks Summary Card */}
               <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-800 dark:text-emerald-300 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 size={16} className="text-emerald-500" />
-                  <span className="font-medium">All checks have passed (3 successful checks)</span>
+                  <span className="font-medium">
+                    {checks.length === 0
+                      ? 'No checks recorded yet'
+                      : checks.every((c) => c.status === 'passed')
+                        ? `All checks have passed (${checks.length} successful check${checks.length === 1 ? '' : 's'})`
+                        : `${checks.filter((c) => c.status === 'passed').length}/${checks.length} checks passing`}
+                  </span>
                 </div>
-                <span className="text-[11px] font-mono opacity-80">100% Passing</span>
+                {checks.length > 0 && (
+                  <span className="text-[11px] font-mono opacity-80">
+                    {Math.round((checks.filter((c) => c.status === 'passed').length / checks.length) * 100)}% Passing
+                  </span>
+                )}
               </div>
 
               {/* Status Banner */}
@@ -197,6 +253,9 @@ export const PRReviewStudioModal: React.FC<PRReviewStudioModalProps> = ({
 
           {activeTab === 'commits' && (
             <div className="space-y-2">
+              {commits.length === 0 && (
+                <p className="text-xs text-neutral-500">No commits yet — checkpoints appear here as you work.</p>
+              )}
               {commits.map((c) => (
                 <div
                   key={c.hash}
@@ -217,6 +276,9 @@ export const PRReviewStudioModal: React.FC<PRReviewStudioModalProps> = ({
 
           {activeTab === 'checks' && (
             <div className="space-y-2">
+              {checks.length === 0 && (
+                <p className="text-xs text-neutral-500">No checks yet — run the project to record one.</p>
+              )}
               {checks.map((chk, i) => (
                 <div
                   key={i}
@@ -309,13 +371,17 @@ export const PRReviewStudioModal: React.FC<PRReviewStudioModalProps> = ({
               Cancel
             </button>
 
+            {mergeError && (
+              <span className="text-[11px] text-red-600 dark:text-red-400">{mergeError}</span>
+            )}
             {prStatus === 'open' ? (
               <button
                 onClick={handleMerge}
-                className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-sm flex items-center gap-1.5 cursor-pointer"
+                disabled={merging}
+                className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
                 <GitMerge size={13} />
-                <span>Squash and Merge</span>
+                <span>{merging ? 'Merging…' : 'Squash and Merge'}</span>
               </button>
             ) : (
               <button

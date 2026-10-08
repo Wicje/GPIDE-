@@ -16,55 +16,33 @@ import { TestCase } from '../types';
 interface TestExplorerPaneProps {
   onAutoFixTest: (test: TestCase) => void;
   theme?: 'light' | 'dark';
+  /** Real check rows (run results). Empty = nothing has run yet. */
+  tests?: TestCase[];
+  running?: boolean;
+  onRunAll?: () => void;
 }
 
 export const TestExplorerPane: React.FC<TestExplorerPaneProps> = ({
   onAutoFixTest,
   theme = 'light',
+  tests,
+  running,
+  onRunAll,
 }) => {
   const isDark = theme === 'dark';
-  const [isRunning, setIsRunning] = useState(false);
-  const [expandedTestId, setExpandedTestId] = useState<string | null>('t-fail');
+  const [localRunning, setLocalRunning] = useState(false);
+  const [expandedTestId, setExpandedTestId] = useState<string | null>(null);
 
-  const [testSuites, setTestSuites] = useState<TestCase[]>([
-    {
-      id: 't-1',
-      name: 'returns correct iconSize for compact pinned tab',
-      file: 'src/components/PaneContainer/PaneTabBar.test.tsx',
-      status: 'passed',
-      durationMs: 14,
-    },
-    {
-      id: 't-2',
-      name: 'updates buttonSizeClass when isCompact toggles',
-      file: 'src/components/PaneContainer/PaneTabBar.test.tsx',
-      status: 'passed',
-      durationMs: 12,
-    },
-    {
-      id: 't-3',
-      name: 'triggers onTabClick on button interaction',
-      file: 'src/components/PaneContainer/PaneTabBar.test.tsx',
-      status: 'passed',
-      durationMs: 9,
-    },
-    {
-      id: 't-fail',
-      name: 'cancels inflight inference within 35ms keystroke debounce',
-      file: 'src/hooks/useResizeObserver.test.ts',
-      status: 'failed',
-      durationMs: 42,
-      expected: 'p50 latency <= 35ms and aborted prior promise',
-      actual: 'timer resolved after 58ms before AbortController signal dispatched',
-      error: 'AssertionError: expected debounce threshold 35ms, but stale completion resolved at 58ms',
-    },
-  ]);
+  const testSuites = tests ?? [];
+  const isRunning = running ?? localRunning;
 
   const handleRunAll = () => {
-    setIsRunning(true);
-    setTimeout(() => {
-      setIsRunning(false);
-    }, 900);
+    if (!onRunAll) return;
+    setLocalRunning(true);
+    void Promise.resolve()
+      .then(() => onRunAll())
+      .catch(() => {})
+      .finally(() => setLocalRunning(false));
   };
 
   const passedCount = testSuites.filter((t) => t.status === 'passed').length;
@@ -106,6 +84,11 @@ export const TestExplorerPane: React.FC<TestExplorerPaneProps> = ({
 
       {/* Tests Tree */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2 text-xs">
+        {testSuites.length === 0 && !isRunning && (
+          <div className="rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 px-4 py-6 text-center text-neutral-500">
+            No checks yet — press Run All to execute the project entry.
+          </div>
+        )}
         {testSuites.map((test) => {
           const isFailed = test.status === 'failed';
           const isExpanded = expandedTestId === test.id;
