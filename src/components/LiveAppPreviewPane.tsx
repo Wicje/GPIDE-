@@ -20,7 +20,10 @@ interface LiveAppPreviewPaneProps {
   theme?: 'light' | 'dark';
   /** Real bundled preview HTML. Absent = honest empty state (no fake app). */
   srcDoc?: string | null;
+  /** Remote live URL (Cells dev server). Shows an "open live" action when set. */
+  previewUrl?: string | null;
   previewLabel?: string;
+  onOpenLiveUrl?: (url: string) => void;
   onReloadPreview?: () => void;
   /** Real console lines streamed from the preview harness. */
   consoleLines?: string[];
@@ -31,8 +34,10 @@ export const LiveAppPreviewPane: React.FC<LiveAppPreviewPaneProps> = ({
   onSwitchToDiff,
   theme = 'light',
   srcDoc,
+  previewUrl,
   previewLabel,
   onReloadPreview,
+  onOpenLiveUrl,
   consoleLines,
 }) => {
   const isDark = theme === 'dark';
@@ -101,6 +106,15 @@ export const LiveAppPreviewPane: React.FC<LiveAppPreviewPaneProps> = ({
             title="Rebuild Preview"
           >
             <RefreshCw size={13} />
+          </button>
+          )}
+          {previewUrl && (
+          <button
+            onClick={() => onOpenLiveUrl?.(previewUrl)}
+            className="p-1 hover:text-neutral-900 dark:hover:text-white transition-colors cursor-pointer text-neutral-400"
+            title={`Open live URL: ${previewUrl}`}
+          >
+            <ExternalLink size={13} />
           </button>
           )}
         </div>

@@ -1,5 +1,14 @@
 import React, { useState } from 'react';
 import {
+  mudAuthConfigured,
+  mudLogin,
+  mudRegister,
+  mudResetPassword,
+  mudMagicLink,
+  mudOAuthProviders,
+  mudOAuthStart,
+} from '../adapters/mudauth';
+import {
   X,
   Check,
   Shield,
@@ -41,6 +50,88 @@ interface LoginAndAccountModalProps {
   geminiKeySet?: boolean;
   onSaveGeminiKey?: (key: string) => void;
   onClearGeminiKey?: () => void;
+  providerKeys?: Record<string, boolean>;
+  onSaveProviderKey?: (provider: 'openrouter' | 'anthropic' | 'chatgpt', key: string) => void;
+  onClearProviderKey?: (provider: 'openrouter' | 'anthropic' | 'chatgpt') => void;
+  quotaLine?: string | null;
+}
+
+const EXTRA_KEY_ROWS: Array<{
+  id: 'openrouter' | 'anthropic' | 'chatgpt';
+  label: string;
+  placeholder: string;
+}> = [
+  { id: 'openrouter', label: 'OpenRouter', placeholder: 'sk-or-… (one key, many models)' },
+  { id: 'anthropic', label: 'Anthropic', placeholder: 'sk-ant-… (console.anthropic.com)' },
+  { id: 'chatgpt', label: 'OpenAI', placeholder: 'sk-… (platform.openai.com)' },
+];
+
+function ProviderKeyRow({
+  label,
+  placeholder,
+  saved,
+  input,
+  onInput,
+  onSave,
+  onClear,
+}: {
+  label: string;
+  placeholder: string;
+  saved: boolean;
+  input: string;
+  onInput: (v: string) => void;
+  onSave: (key: string) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  if (saved) {
+    return (
+      <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-1.5">
+        <span className="text-[11px] text-emerald-600 dark:text-emerald-400">{label} key saved in this browser</span>
+        <button
+          className="text-[11px] text-neutral-500 underline-offset-2 hover:underline"
+          onClick={onClear}
+        >
+          Remove
+        </button>
+      </div>
+    );
+  }
+  if (!open) {
+    return (
+      <button
+        className="w-full text-left text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 px-0.5"
+        onClick={() => setOpen(true)}
+      >
+        + Add {label} key
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      <div className="text-[11px] font-medium text-neutral-600 dark:text-neutral-300">{label}</div>
+      <div className="flex items-center gap-2">
+        <input
+          type="password"
+          value={input}
+          onChange={(e) => onInput(e.target.value)}
+          placeholder={placeholder}
+          autoComplete="off"
+          className="h-8 flex-1 rounded-md border border-neutral-300 dark:border-neutral-700 bg-transparent px-2 font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
+        <button
+          className="h-8 px-2.5 rounded-md bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-[11px] font-semibold disabled:opacity-40"
+          disabled={!input.trim()}
+          onClick={() => {
+            onSave(input.trim());
+            setOpen(false);
+          }}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
@@ -59,9 +150,32 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
   geminiKeySet,
   onSaveGeminiKey,
   onClearGeminiKey,
+  providerKeys,
+  onSaveProviderKey,
+  onClearProviderKey,
+  quotaLine,
 }) => {
   const isDark = theme === 'dark';
-  const [activeTab, setActiveTab] = useState<'account' | 'signin'>('account');
+  const [activeTab, setActiveTab] = useState<'account' | 'signin' | 'mudbase'>('account');
+  const mudReady = mudAuthConfigured();
+  const [mudMode, setMudMode] = useState<'signin' | 'register' | 'reset'>('signin');
+  const [mudEmail, setMudEmail] = useState('');
+  const [mudPassword, setMudPassword] = useState('');
+  const [mudName, setMudName] = useState('');
+  const [mudError, setMudError] = useState<string | null>(null);
+  const [oauthProviders, setOauthProviders] = useState<string[] | null>(null);
+  const [oauthLoading, setOauthLoading] = useState(false);
+
+  React.useEffect(() => {
+    if (activeTab === 'mudbase' && mudReady && oauthProviders === null && !oauthLoading) {
+      setOauthLoading(true);
+      mudOAuthProviders()
+        .then((list) => setOauthProviders(list ?? ['github', 'google']))
+        .catch(() => setOauthProviders(['github', 'google']))
+        .finally(() => setOauthLoading(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
   const [emailInput, setEmailInput] = useState('');
   const [customApiKeyEnabled, setCustomApiKeyEnabled] = useState(false);
   const [keyInput, setKeyInput] = useState('');
@@ -92,6 +206,40 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
       })
       .finally(() => setBusy(false));
   };
+
+  const toUser = (email: string, name?: string) => ({
+    name: name?.trim() || email.split('@')[0],
+    email,
+  });
+
+  async function handleMudSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const email = mudEmail.trim();
+    if (!email || busy) return;
+    setBusy(true);
+    setNotice(null);
+    setMudError(null);
+    try {
+      if (mudMode === 'reset') {
+        setNotice(await mudResetPassword(email));
+      } else if (mudMode === 'register') {
+        if (!mudPassword) throw new Error('Choose a password.');
+        await mudRegister(email, mudPassword, mudName.trim() || undefined);
+        setNotice('Account created — check your email to verify, then sign in.');
+        setMudMode('signin');
+      } else {
+        if (!mudPassword) throw new Error('Enter your password.');
+        const u = await mudLogin(email, mudPassword);
+        onLoginSuccess?.(toUser(u.email, u.name));
+        setMudPassword('');
+        setActiveTab('account');
+      }
+    } catch (err) {
+      setMudError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const handleMagicLink = () => {
     const email = emailInput.trim();
@@ -159,6 +307,18 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
             >
               Sign In Portal
             </button>
+            {mudReady && (
+              <button
+                onClick={() => setActiveTab('mudbase')}
+                className={`pb-0.5 transition-colors cursor-pointer ${
+                  activeTab === 'mudbase'
+                    ? 'border-b-2 border-blue-500 font-semibold text-neutral-900 dark:text-white'
+                    : 'text-neutral-400 hover:text-neutral-700'
+                }`}
+              >
+                Mudbase
+              </button>
+            )}
           </div>
 
           <button
@@ -170,7 +330,7 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
         </div>
 
         {/* Tab 1: Account & Usage Details */}
-        {activeTab === 'account' ? (
+        {activeTab === 'account' && (
           <div className="p-4 space-y-4 text-xs">
             {/* User Profile Card */}
             <div className="flex items-center justify-between p-3 rounded-xl bg-neutral-50 dark:bg-[#222228] border border-neutral-200 dark:border-neutral-700">
@@ -218,6 +378,9 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
                 <span>{resetLine ?? 'Resets monthly'}</span>
                 <span>{usagePercent}% utilized</span>
               </div>
+              {quotaLine && (
+                <div className="text-[10.5px] text-neutral-500 font-mono">{quotaLine}</div>
+              )}
             </div>
 
             {/* Team & Workspace */}
@@ -255,38 +418,35 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
                 </button>
               </div>
               {customApiKeyEnabled && (
-                geminiKeySet ? (
-                  <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-1.5">
-                    <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Gemini key saved in this browser</span>
-                    <button
-                      className="text-[11px] text-neutral-500 underline-offset-2 hover:underline"
-                      onClick={() => onClearGeminiKey?.()}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="password"
-                      value={keyInput}
-                      onChange={(e) => setKeyInput(e.target.value)}
-                      placeholder="AIza… (Google AI Studio key)"
-                      autoComplete="off"
-                      className="h-8 flex-1 rounded-md border border-neutral-300 dark:border-neutral-700 bg-transparent px-2 font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                    <button
-                      className="h-8 px-2.5 rounded-md bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-[11px] font-semibold disabled:opacity-40"
-                      disabled={!keyInput.trim()}
-                      onClick={() => {
-                        onSaveGeminiKey?.(keyInput.trim());
+                <div className="space-y-2">
+                  <ProviderKeyRow
+                    label="Gemini"
+                    placeholder="AIza… (Google AI Studio key)"
+                    saved={geminiKeySet ?? false}
+                    input={keyInput}
+                    onInput={setKeyInput}
+                    onSave={(k) => {
+                      onSaveGeminiKey?.(k);
+                      setKeyInput('');
+                    }}
+                    onClear={() => onClearGeminiKey?.()}
+                  />
+                  {EXTRA_KEY_ROWS.map((row) => (
+                    <ProviderKeyRow
+                      key={row.id}
+                      label={row.label}
+                      placeholder={row.placeholder}
+                      saved={providerKeys?.[row.id] ?? false}
+                      input={keyInput}
+                      onInput={setKeyInput}
+                      onSave={(k) => {
+                        onSaveProviderKey?.(row.id, k);
                         setKeyInput('');
                       }}
-                    >
-                      Save
-                    </button>
-                  </div>
-                )
+                      onClear={() => onClearProviderKey?.(row.id)}
+                    />
+                  ))}
+                </div>
               )}
             </div>
 
@@ -311,7 +471,8 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
               </button>
             </div>
           </div>
-        ) : (
+        )}
+        {activeTab === 'signin' && (
           /* Tab 2: Sign In / Authentication Portal */
           <div className="p-5 space-y-4 text-xs">
             <div className="text-center space-y-1">
@@ -404,6 +565,136 @@ export const LoginAndAccountModal: React.FC<LoginAndAccountModalProps> = ({
                 {busy ? 'Working…' : 'Send Magic Link'}
               </button>
             </form>
+          </div>
+        )}
+        {activeTab === 'mudbase' && mudReady && (
+          /* Tab 3: Mudbase email + password */
+          <div className="p-5 space-y-3 text-xs">
+            <div className="text-center space-y-1">
+              <h3 className="font-bold text-base">Mudbase account</h3>
+              <p className="text-xs text-neutral-500">
+                {mudMode === 'register'
+                  ? 'Create an account for this project. A verification email follows.'
+                  : mudMode === 'reset'
+                    ? 'Reset your password via email.'
+                    : 'Sign in with your project account.'}
+              </p>
+            </div>
+            <div className="flex rounded-lg bg-neutral-100 dark:bg-neutral-800 p-0.5 text-[11px] font-medium">
+              {(['signin', 'register', 'reset'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => {
+                    setMudMode(m);
+                    setMudError(null);
+                  }}
+                  className={`flex-1 rounded-md px-2 py-1 transition-colors ${
+                    mudMode === m ? 'bg-white dark:bg-neutral-700 shadow-xs text-neutral-900 dark:text-white' : 'text-neutral-500'
+                  }`}
+                >
+                  {m === 'signin' ? 'Sign in' : m === 'register' ? 'Register' : 'Reset'}
+                </button>
+              ))}
+            </div>
+            {mudError && (
+              <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-[11px] text-red-600 dark:text-red-400">
+                {mudError}
+              </div>
+            )}
+            {notice && (
+              <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 text-[11px] text-emerald-700 dark:text-emerald-300">
+                {notice}
+              </div>
+            )}
+            <form onSubmit={handleMudSubmit} className="space-y-2">
+              {mudMode === 'register' && (
+                <input
+                  value={mudName}
+                  onChange={(e) => setMudName(e.target.value)}
+                  placeholder="Display name (optional)"
+                  autoComplete="name"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-300 dark:border-neutral-700 bg-transparent focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              )}
+              <input
+                type="email"
+                value={mudEmail}
+                onChange={(e) => setMudEmail(e.target.value)}
+                placeholder="name@company.com"
+                autoComplete="email"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-300 dark:border-neutral-700 bg-transparent focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              {mudMode !== 'reset' && (
+                <input
+                  type="password"
+                  value={mudPassword}
+                  onChange={(e) => setMudPassword(e.target.value)}
+                  placeholder={mudMode === 'register' ? 'Choose a password (8+ chars)' : 'Your password'}
+                  autoComplete={mudMode === 'register' ? 'new-password' : 'current-password'}
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-300 dark:border-neutral-700 bg-transparent focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              )}
+              <button
+                type="submit"
+                disabled={busy}
+                className="w-full py-2 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 font-semibold text-xs rounded-xl hover:opacity-90 transition-opacity cursor-pointer shadow-xs disabled:opacity-50"
+              >
+                {busy ? 'Working…' : mudMode === 'register' ? 'Create account' : mudMode === 'reset' ? 'Send reset email' : 'Sign in'}
+              </button>
+            </form>
+            {mudMode === 'signin' && (
+              <>
+                <button
+                  type="button"
+                  disabled={busy || !mudEmail.trim()}
+                  title="Passwordless sign-in via email link"
+                  onClick={() => {
+                    const email = mudEmail.trim();
+                    if (!email || busy) return;
+                    setBusy(true);
+                    setMudError(null);
+                    void mudMagicLink(email)
+                      .then((msg) => setNotice(msg))
+                      .catch((err) => setMudError((err as Error).message))
+                      .finally(() => setBusy(false));
+                  }}
+                  className="w-full text-center text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 underline-offset-2 hover:underline disabled:opacity-40"
+                >
+                  Email me a sign-in link instead
+                </button>
+                {(oauthLoading || (oauthProviders ?? []).length > 0) && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-px bg-neutral-200 dark:bg-neutral-800" />
+                      <span className="text-[10.5px] text-neutral-400">or continue with</span>
+                      <div className="flex-1 h-px bg-neutral-200 dark:bg-neutral-800" />
+                    </div>
+                    <div className="flex gap-2">
+                      {(oauthProviders ?? ['github', 'google'])
+                        .filter((p) => p === 'github' || p === 'google')
+                        .map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            disabled={busy}
+                            onClick={() => {
+                              try {
+                                mudOAuthStart(p);
+                              } catch (err) {
+                                setMudError((err as Error).message);
+                              }
+                            }}
+                            className="flex-1 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 font-semibold text-xs hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors disabled:opacity-40"
+                          >
+                            {p === 'github' ? 'GitHub' : 'Google'}
+                          </button>
+                        ))}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>

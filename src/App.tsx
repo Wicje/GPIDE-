@@ -9,6 +9,10 @@ import { VideoPreviewModal } from './components/VideoPreviewModal';
 import { PRModal } from './components/PRModal';
 import { PRReviewStudioModal, type PRCheck, type PRCommit, type PRComment } from './components/PRReviewStudioModal';
 import { VercelDeployModal } from './components/VercelDeployModal';
+import { HistoryModal } from './components/HistoryModal';
+import { ShareModal } from './components/ShareModal';
+import { GitHubPushModal } from './components/GitHubPushModal';
+import { ImportModal } from './components/ImportModal';
 import { LoginAndAccountModal } from './components/LoginAndAccountModal';
 import { CursorRulesModal } from './components/CursorRulesModal';
 import { CommandPaletteModal } from './components/CommandPaletteModal';
@@ -54,6 +58,7 @@ import {
   deployStatic,
 } from './adapters/zut';
 import { geminiTurn, getGeminiKey, setGeminiKey } from './adapters/gemini';
+import { getProviderKey, setProviderKey, clearProviderKey, type DirectProvider } from './adapters/providers';
 import lightWallpaperImg from './assets/images/macos_mountain_wallpaper_1791421916911.jpg';
 import darkWallpaperImg from './assets/images/macos_dark_wallpaper_1791422419326.jpg';
 import {
@@ -78,10 +83,12 @@ const GEMINI_MODELS = [
   { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
 ];
 const CLOUD_LABEL = 'Cloud agent';
-
-function modelLabels(): string[] {
-  return [...GEMINI_MODELS.map((m) => m.label), ...(cloudEnabled() ? [CLOUD_LABEL] : [])];
-}
+const OPENCODE_LABEL = 'opencode (self-host)';
+const PROVIDER_LABELS = [
+  { id: 'openrouter' as const, label: 'OpenRouter' },
+  { id: 'anthropic' as const, label: 'Claude' },
+  { id: 'chatgpt' as const, label: 'ChatGPT' },
+];
 
 function labelToGeminiId(label: string): string {
   return GEMINI_MODELS.find((m) => m.label === label)?.id ?? GEMINI_MODELS[0].id;
@@ -157,8 +164,29 @@ export default function App() {
   const [user, setUser] = useState<{ name: string; email: string } | null>(null);
   const [signInError, setSignInError] = useState<string | null>(null);
   const [geminiKeySet, setGeminiKeySet] = useState(() => getGeminiKey() !== null);
+  const [providerKeySet, setProviderKeySet] = useState<Record<string, boolean>>(() => ({
+    openrouter: getProviderKey('openrouter') !== null,
+    anthropic: getProviderKey('anthropic') !== null,
+    chatgpt: getProviderKey('chatgpt') !== null,
+  }));
 
   useEffect(() => {
+    void import('./adapters/mudauth').then(({ mudSession, readMudCallback, persistMudCallback, clearMudCallbackFromUrl }) => {
+      // OAuth / magic-link redirects land back here with a session in the URL.
+      const cb = readMudCallback();
+      if (cb) {
+        persistMudCallback(cb);
+        clearMudCallbackFromUrl();
+      }
+      mudSession()
+        .then((u) => {
+          if (u?.email) {
+            setUser({ name: u.name?.trim() || u.email.split('@')[0], email: u.email });
+            if (cb) showToast('Signed in with Mudbase.');
+          }
+        })
+        .catch(() => {});
+    });
     const sb = getSupabase();
     if (!sb) return;
     sb.auth.getSession().then(({ data }) => {
@@ -209,6 +237,8 @@ export default function App() {
         if (rows.length === 0) return;
         const latest = rows[0];
         setProjectId(latest.id);
+        setSavedTo('cloud');
+        if (latest.share_token) setShareLink(buildShareLink(latest.share_token));
         if (Object.keys(filesRef.current).length <= 3) {
           setFiles({ ...latest.files });
           setProjectName(latest.name);
@@ -253,6 +283,36 @@ export default function App() {
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [srcDoc, setSrcDoc] = useState('');
   const [consoleLines, setConsoleLines] = useState<string[]>([]);
+  const [buildMs, setBuildMs] = useState<number | null>(null);
+  const [remotePreviewUrl, setRemotePreviewUrl] = useState<string | null>(null);
+
+  // Remote live URL (Cells dev server) when the broker has one.
+  useEffect(() => {
+    if (!projectId) {
+      setRemotePreviewUrl(null);
+      return;
+    }
+    let cancelled = false;
+    void import('./adapters/zut').then(({ brokerPreview }) => {
+      brokerPreview(projectId)
+        .then((p) => {
+          if (!cancelled) setRemotePreviewUrl(p.url);
+        })
+        .catch(() => {
+          if (!cancelled) setRemotePreviewUrl(null);
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+  const [savedTo, setSavedTo] = useState<'device' | 'cloud'>('device');
+  const [shareLink, setShareLink] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showShare, setShowShare] = useState(false);
+  const [showGithub, setShowGithub] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
   const [events, setEvents] = useState<string[]>(() => [`[${stamp()}] Workspace ready.`]);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [prData, setPrData] = useState<{
@@ -287,14 +347,25 @@ export default function App() {
       setSrcDoc('');
       return;
     }
+    const t0 = performance.now();
     try {
-      await initRunner();
-      const bundle = await bundleProject(target);
+      // Weak devices first: cloud's native esbuild, then local wasm.
+      let bundle;
+      try {
+        const { bundleProjectRemote } = await import('./adapters/preview');
+        bundle = await bundleProjectRemote(target);
+      } catch (e) {
+        if (!(e as Error).message.startsWith('REMOTE_UNREACHABLE:')) throw e;
+        await initRunner();
+        bundle = await bundleProject(target);
+      }
       setSrcDoc(buildSrcdoc(target['index.html'], bundle));
+      setBuildMs(Math.round(performance.now() - t0));
     } catch (e) {
       const errs = formatBuildErrors(e).map((r) => r.message).join(' | ');
       setConsoleLines((prev) => [...prev.slice(-199), `[error] Build error: ${errs}`]);
       setSrcDoc('');
+      setBuildMs(null);
     }
   }
 
@@ -372,6 +443,49 @@ export default function App() {
         for (const p of r.deleted) delete base[p];
         reply = r.reply;
         changedPaths = [...Object.keys(r.updated), ...Object.keys(r.created), ...r.deleted];
+      } else if (modelLabel === OPENCODE_LABEL) {
+        const { opencodeTurn } = await import('./adapters/opencode');
+        const { buildSystemPrompt } = await import('./adapters/gemini');
+        const r = await opencodeTurn(
+          base,
+          promptText,
+          buildSystemPrompt(projectName, base, activeFilePath),
+          () => {},
+        );
+        for (const [p, c] of Object.entries(r.updated)) base[p] = c;
+        for (const [p, c] of Object.entries(r.created)) base[p] = c;
+        for (const p of r.deleted) delete base[p];
+        reply = r.reply;
+        changedPaths = [...Object.keys(r.updated), ...Object.keys(r.created), ...r.deleted];
+      } else if (PROVIDER_LABELS.some((p) => p.label === modelLabel)) {
+        const provider = PROVIDER_LABELS.find((p) => p.label === modelLabel)!.id;
+        const { streamProvider } = await import('./adapters/providers');
+        const { buildSystemPrompt } = await import('./adapters/gemini');
+        const history = (chatHistories[sessionId] ?? []).slice(-12);
+        let acc = '';
+        await streamProvider(
+          provider,
+          history,
+          buildSystemPrompt(projectName, base, activeFilePath),
+          (d) => {
+            acc += d;
+          },
+        );
+        reply = acc;
+        changedPaths = [];
+        const edits = parseEdits(reply, base);
+        for (const e of edits) {
+          base[e.path] = e.content;
+          changedPaths.push(e.path);
+        }
+        setChatHistories((prev) => ({
+          ...prev,
+          [sessionId]: [
+            ...(prev[sessionId] ?? []),
+            { role: 'user' as const, content: promptText },
+            { role: 'assistant' as const, content: reply },
+          ].slice(-24),
+        }));
       } else {
         const history = (chatHistories[sessionId] ?? []).slice(-12);
         const r = await geminiTurn(history, promptText, {
@@ -813,7 +927,88 @@ export default function App() {
     }
   };
 
-  const modelOptions = ['Gemini 2.5 Flash', 'Gemini 2.5 Pro', ...(cloudEnabled() ? [CLOUD_LABEL] : [])];
+  const [opencodeReady, setOpencodeReady] = useState(false);
+  useEffect(() => {
+    void import('./adapters/opencode').then(({ selfHostReady }) => {
+      selfHostReady()
+        .then(setOpencodeReady)
+        .catch(() => {});
+    });
+  }, []);
+
+  const modelOptions = [
+    'Gemini 2.5 Flash',
+    'Gemini 2.5 Pro',
+    ...PROVIDER_LABELS.filter((p) => {
+      try {
+        return getProviderKey(p.id) !== null;
+      } catch {
+        return false;
+      }
+    }).map((p) => p.label),
+    ...(cloudEnabled() ? [CLOUD_LABEL] : []),
+    ...(opencodeReady ? [OPENCODE_LABEL] : []),
+  ];
+
+  function restoreSnapshot(id: string) {
+    const snap = listSnapshots().find((s) => s.id === id);
+    if (!snap) {
+      showToast('Snapshot not found.');
+      return;
+    }
+    takeSnapshot(filesRef.current);
+    setFiles({ ...snap.files });
+    logEvent('RESTORE', id);
+    setShowHistory(false);
+    showToast('Snapshot restored (previous state checkpointed).');
+  }
+
+  async function handleImport(url: string): Promise<{ name: string; files: number }> {
+    const { importFromUrl } = await import('./adapters/importer');
+    const result = await importFromUrl(url);
+    takeSnapshot(filesRef.current);
+    setFiles((prev) => ({ ...prev, ...result.files }));
+    setProjectName(result.name);
+    logEvent('IMPORT', `${url} → ${Object.keys(result.files).length} files`);
+    showToast(`Imported ${Object.keys(result.files).length} files from URL.`);
+    return { name: result.name, files: Object.keys(result.files).length };
+  }
+
+  function handleUploadFiles(list: FileList | File[]) {
+    const incoming = Array.from(list).slice(0, 20);
+    if (incoming.length === 0) return;
+    void (async () => {
+      const next: FileMap = {};
+      for (const file of incoming) {
+        const isImage = file.type.startsWith('image/');
+        const isText =
+          file.type.startsWith('text/') ||
+          file.type === 'application/json' ||
+          /\.(json|js|ts|tsx|jsx|css|html|htm|md|txt|svg)$/i.test(file.name);
+        try {
+          if (isImage) {
+            next[file.name] = await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result as string);
+              reader.readAsDataURL(file);
+            });
+          } else if (isText || file.size < 512_000) {
+            next[file.name] = await file.text();
+          }
+        } catch {
+          /* skip unreadable files */
+        }
+      }
+      const count = Object.keys(next).length;
+      if (count === 0) {
+        showToast('No readable files in that selection.');
+        return;
+      }
+      setFiles((prev) => ({ ...prev, ...next }));
+      logEvent('UPLOAD', `${count} files`);
+      showToast(`Added ${count} file${count === 1 ? '' : 's'}.`);
+    })();
+  }
 
   const isDark = theme === 'dark';
   const currentWallpaper = isDark ? darkWallpaperImg : lightWallpaperImg;
@@ -1058,6 +1253,9 @@ export default function App() {
               onInlinePrompt={(prompt, fileId) => {
                 void runAgentTurn(activeSessionId, `In ${fileId}: ${prompt}`);
               }}
+              onUploadFiles={handleUploadFiles}
+              saveState={savedTo === 'cloud' ? 'Saved · cloud' : 'Saved · this device'}
+              buildMs={buildMs}
               onSwitchToDiff={() => setRightPaneMode('diff')}
               theme={theme}
             />
@@ -1066,10 +1264,12 @@ export default function App() {
           {rightPaneMode === 'preview' && (
             <LiveAppPreviewPane
               srcDoc={srcDoc || null}
+              previewUrl={remotePreviewUrl}
               previewLabel={kind === 'web' ? 'preview (sandboxed)' : undefined}
               onReloadPreview={() => {
                 void rebuildPreview(filesRef.current);
               }}
+              onOpenLiveUrl={(url) => window.open(url, '_blank', 'noopener')}
               consoleLines={consoleLines}
               onInspectElement={() => {}}
               onSwitchToDiff={() => setRightPaneMode('diff')}
@@ -1121,17 +1321,16 @@ export default function App() {
       <PRModal
         isOpen={isPRModalOpen}
         onClose={() => setIsPRModalOpen(false)}
-        onSubmit={(title, description) => {
-          void (async () => {
-            let shareUrl: string | null = null;
-            if (user && brokerEnabled() && projectId) {
-              try {
-                const token = await setProjectShared(projectId, true);
-                if (token) shareUrl = buildShareLink(token);
-              } catch (e) {
-                showToast(`Share failed: ${(e as Error).message}`);
+          onSubmit={(title, description) => {
+            void (async () => {
+              let shareUrl: string | null = null;
+              if (user && brokerEnabled() && projectId) {
+                try {
+                  shareUrl = await createShareLink();
+                } catch (e) {
+                  showToast(`Share failed: ${(e as Error).message}`);
+                }
               }
-            }
             setPrData({ title: title || `${projectName} review`, description, shareUrl });
             setIsPRModalOpen(false);
             setIsPRStudioOpen(true);
@@ -1220,6 +1419,7 @@ export default function App() {
         }}
         onLogout={() => {
           void getSupabase()?.auth.signOut();
+          void import('./adapters/mudauth').then(({ mudLogout }) => mudLogout());
           setUser(null);
           showToast('Signed out.');
         }}
@@ -1245,6 +1445,7 @@ export default function App() {
             : 'Running local-only: add VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY and restart to enable sign-in.'
         }
         teamLine="Personal workspace"
+        quotaLine={`${runs.filter((r) => Date.now() - r.at < 86_400_000).length} runs in the last 24h (broker cap enforced server-side)`}
         resetLine={`Resets ${new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toLocaleDateString([], { month: 'short', day: 'numeric' })}`}
         geminiKeySet={geminiKeySet}
         onSaveGeminiKey={(key) => {
@@ -1260,6 +1461,17 @@ export default function App() {
           }
           setGeminiKeySet(false);
           showToast('Gemini key removed.');
+        }}
+        providerKeys={providerKeySet}
+        onSaveProviderKey={(p: DirectProvider, key: string) => {
+          setProviderKey(p, key);
+          setProviderKeySet((prev) => ({ ...prev, [p]: true }));
+          showToast('Provider key saved in this browser.');
+        }}
+        onClearProviderKey={(p: DirectProvider) => {
+          clearProviderKey(p);
+          setProviderKeySet((prev) => ({ ...prev, [p]: false }));
+          showToast('Provider key removed.');
         }}
         theme={theme}
       />
@@ -1293,6 +1505,9 @@ export default function App() {
         onNewAgent={() => setIsNewAgentOpen(true)}
         onOpenDeploy={() => setIsVercelDeployOpen(true)}
         onOpenAccount={() => setIsLoginAccountOpen(true)}
+        onOpenHistory={() => setShowHistory(true)}
+        onShare={() => setShowShare(true)}
+        onImportUrl={() => setShowImport(true)}
         theme={theme}
       />
 
@@ -1310,7 +1525,54 @@ export default function App() {
           showToast(`Started new agent session: "${newSession.title}"`);
           void runAgentTurn(newId, prompt);
         }}
-        models={['Gemini 2.5 Flash', 'Gemini 2.5 Pro', ...(cloudEnabled() ? [CLOUD_LABEL] : [])]}
+        models={modelOptions}
+        theme={theme}
+      />
+
+      <HistoryModal
+        isOpen={showHistory}
+        onClose={() => setShowHistory(false)}
+        snapshots={listSnapshots()}
+        onRestore={restoreSnapshot}
+        theme={theme}
+      />
+
+      <ShareModal
+        isOpen={showShare}
+        onClose={() => setShowShare(false)}
+        link={shareLink}
+        canShare={Boolean(user && brokerEnabled() && (projectId || Object.keys(files).length > 0))}
+        busy={shareBusy}
+        onCreate={() => {
+          void createShareLink().then((link) => {
+            if (link) showToast(`Share link ready: ${link}`);
+            else showToast('Sign in with a cloud project to share.');
+          });
+        }}
+        onRevoke={() => {
+          void revokeShareLink();
+        }}
+        theme={theme}
+      />
+
+      <GitHubPushModal
+        isOpen={showGithub}
+        onClose={() => setShowGithub(false)}
+        defaultRepo={projectName}
+        onPush={async (repo, isPrivate, token) => {
+          const { pushToGithub } = await import('./adapters/github');
+          const r = await pushToGithub(repo, isPrivate, filesRef.current, token);
+          logEvent('GITHUB', r.url);
+          showToast(`Pushed to ${r.url}`);
+          return r;
+        }}
+        theme={theme}
+      />
+
+      <ImportModal
+        isOpen={showImport}
+        onClose={() => setShowImport(false)}
+        onImport={handleImport}
         theme={theme}
       />
 
@@ -1327,6 +1589,7 @@ export default function App() {
   async function save(): Promise<void> {
     if (!user || !brokerEnabled()) {
       saveDraft(projectName, filesRef.current);
+      setSavedTo('device');
       showToast('Saved to this device (sign in + broker for cloud save).');
       return;
     }
@@ -1337,10 +1600,44 @@ export default function App() {
       } else {
         await updateProject(projectId, projectName, filesRef.current);
       }
+      setSavedTo('cloud');
       showToast('Saved to cloud.');
       logEvent('SAVE', projectName);
     } catch (e) {
       showToast(`Save failed: ${(e as Error).message}`);
+    }
+  }
+
+  async function createShareLink(): Promise<string | null> {
+    if (!user || !brokerEnabled() || !projectId) return null;
+    setShareBusy(true);
+    try {
+      let id = projectId;
+      if (!id) {
+        id = await createProject(projectName, filesRef.current);
+        setProjectId(id);
+      }
+      const token = await setProjectShared(id, true);
+      if (!token) return null;
+      const link = buildShareLink(token);
+      setShareLink(link);
+      return link;
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function revokeShareLink(): Promise<void> {
+    if (!projectId) return;
+    setShareBusy(true);
+    try {
+      await setProjectShared(projectId, false);
+      setShareLink(null);
+      showToast('Share link revoked.');
+    } catch (e) {
+      showToast(`Couldn't revoke: ${(e as Error).message}`);
+    } finally {
+      setShareBusy(false);
     }
   }
 }

@@ -13,6 +13,39 @@ import type { FileMap } from './filemap';
 
 export const CONSOLE_SOURCE = 'zut-console';
 
+const cloudUrl = (import.meta.env.VITE_CLOUD_URL as string | undefined)?.replace(/\/+$/, '') ?? '';
+
+/**
+ * Bundle on zut-cloud (native esbuild) instead of esbuild-wasm in the
+ * browser. Throws REMOTE_UNREACHABLE when the cloud can't do it, so callers
+ * fall back to the local runner. Compile errors throw BUILD_FAILED like local.
+ */
+export async function bundleProjectRemote(files: FileMap): Promise<BuildResult> {
+  if (!cloudUrl) throw new Error('REMOTE_UNREACHABLE: cloud is not configured.');
+  let res: Response;
+  try {
+    res = await fetch(`${cloudUrl}/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files }),
+    });
+  } catch (e) {
+    throw new Error(`REMOTE_UNREACHABLE:${(e as Error).message}`);
+  }
+  const json = (await res.text().then((t) => (t ? JSON.parse(t) : null)).catch(() => null)) as {
+    js?: string;
+    css?: string;
+    referenced?: string[];
+    errors?: unknown[];
+    error?: string;
+  } | null;
+  if (!res.ok) throw new Error(`REMOTE_UNREACHABLE:${json?.error ?? `Cloud request failed (${res.status})`}`);
+  if (Array.isArray(json?.errors) && json.errors.length) {
+    throw new Error('BUILD_FAILED:' + JSON.stringify({ errors: json.errors }));
+  }
+  return { js: json?.js ?? '', css: json?.css ?? '', referenced: json?.referenced ?? [] };
+}
+
 export interface RunnerError {
   message: string;
   location?: { line?: number; column?: number; file?: string };

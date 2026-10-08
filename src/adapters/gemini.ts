@@ -38,7 +38,12 @@ const EDIT_PROTOCOL = [
   'Put explanations in normal prose outside the blocks. Only emit an edit block when you intend to change that file.',
 ].join('\n');
 
-export function buildSystemPrompt(projectName: string, files: FileMap, activePath: string): string {
+export function buildSystemPrompt(
+  projectName: string,
+  files: FileMap,
+  activePath: string,
+  extra?: string,
+): string {
   const names = Object.keys(files).sort();
   const parts = [
     'You are a coding assistant inside a browser IDE. Help improve the code with short explanations.',
@@ -52,6 +57,7 @@ export function buildSystemPrompt(projectName: string, files: FileMap, activePat
   }
   const rules = loadRules().trim();
   if (rules) parts.push('', `Project rules (always follow):\n${rules}`);
+  if (extra) parts.push('', extra);
   parts.push('', EDIT_PROTOCOL);
   return parts.join('\n');
 }

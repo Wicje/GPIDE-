@@ -52,6 +52,16 @@ export function getSupabase(): SupabaseClient | null {
 }
 
 export async function getUserToken(): Promise<string | null> {
+  // Mudbase user token first (verified server-side via /api/auth/session),
+  // then the Supabase session. Either way only the user's own token leaves
+  // the browser — service keys never do.
+  try {
+    const { mudToken } = await import('./mudauth');
+    const t = await mudToken();
+    if (t) return t;
+  } catch {
+    /* fall through to Supabase */
+  }
   const sb = getSupabase();
   if (!sb) return null;
   try {
@@ -131,6 +141,22 @@ export async function runEntry(files: FileMap, entry: string, stdin = ''): Promi
     body: JSON.stringify({ workspaceId: 'default', files, entry, stdin }),
   });
   return asJson<RunResult>(res);
+}
+
+export async function brokerPreview(workspaceId = 'default'): Promise<{ url: string | null; access: string }> {
+  if (!brokerUrl) return { url: null, access: 'private-token' };
+  const token = await getUserToken();
+  if (!token) return { url: null, access: 'private-token' };
+  try {
+    const res = await fetch(`${brokerUrl}/api/broker/preview?workspaceId=${encodeURIComponent(workspaceId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return { url: null, access: 'private-token' };
+    const body = (await res.json()) as { url?: string | null; access?: string };
+    return { url: body.url ?? null, access: body.access ?? 'private-token' };
+  } catch {
+    return { url: null, access: 'private-token' };
+  }
 }
 
 export async function terminalToken(workspaceId = 'default'): Promise<{ token: string; expiresInSec: number }> {

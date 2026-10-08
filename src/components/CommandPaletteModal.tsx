@@ -12,6 +12,9 @@ import {
   FileCode,
   Layers,
   ArrowRight,
+  History,
+  Link2,
+  Globe,
 } from 'lucide-react';
 
 interface CommandPaletteItem {
@@ -35,6 +38,9 @@ interface CommandPaletteModalProps {
   onNewAgent: () => void;
   onOpenDeploy?: () => void;
   onOpenAccount?: () => void;
+  onOpenHistory?: () => void;
+  onShare?: () => void;
+  onImportUrl?: () => void;
   theme?: 'light' | 'dark';
   sessions?: Array<{ id: string; title: string }>;
 }
@@ -51,6 +57,9 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
   onNewAgent,
   onOpenDeploy,
   onOpenAccount,
+  onOpenHistory,
+  onShare,
+  onImportUrl,
   theme = 'light',
   sessions,
 }) => {
@@ -84,11 +93,41 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
     },
     {
       id: 'account-settings',
-      title: 'Account Settings & Usage (Cursor Pro)',
+      title: 'Account Settings & Usage',
       category: 'Preferences',
       icon: <Layers size={14} className="text-purple-500" />,
       action: () => {
         if (onOpenAccount) onOpenAccount();
+        onClose();
+      },
+    },
+    {
+      id: 'history',
+      title: 'Version History (snapshots)',
+      category: 'Project',
+      icon: <History size={14} className="text-purple-500" />,
+      action: () => {
+        if (onOpenHistory) onOpenHistory();
+        onClose();
+      },
+    },
+    {
+      id: 'share-link',
+      title: 'Share read-only link',
+      category: 'Project',
+      icon: <Link2 size={14} className="text-blue-500" />,
+      action: () => {
+        if (onShare) onShare();
+        onClose();
+      },
+    },
+    {
+      id: 'import-url',
+      title: 'Import from URL',
+      category: 'Project',
+      icon: <Globe size={14} className="text-emerald-500" />,
+      action: () => {
+        if (onImportUrl) onImportUrl();
         onClose();
       },
     },

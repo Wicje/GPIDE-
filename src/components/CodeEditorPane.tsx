@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import type { editor } from 'monaco-editor';
 import {
+  Upload,
   FileCode,
   Folder,
   FolderOpen,
@@ -33,6 +34,11 @@ interface CodeEditorPaneProps {
   onEditFile?: (fileId: string, content: string) => void;
   /** Real inline-prompt channel: (prompt, fileId) -> agent turn. */
   onInlinePrompt?: (prompt: string, fileId: string) => void;
+  /** Real upload channel: files picked from this device. */
+  onUploadFiles?: (files: FileList | File[]) => void;
+  /** Save location + last build time for the status bar. */
+  saveState?: string | null;
+  buildMs?: number | null;
   theme?: 'light' | 'dark';
 }
 
@@ -41,11 +47,15 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
   activeFileId,
   onEditFile,
   onInlinePrompt,
+  onUploadFiles,
+  saveState,
+  buildMs,
   onSelectFile,
   onCloseFile,
   onSwitchToDiff,
   theme = 'light',
 }) => {
+  const uploadRef = useRef<HTMLInputElement | null>(null);
   const isDark = theme === 'dark';
   const [openTabs, setOpenTabs] = useState<string[]>(() =>
     files.length > 0 ? [files[0].id] : [],
@@ -212,7 +222,29 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
             <div className="p-2 space-y-1">
               <div className="px-1.5 py-1 text-[10.5px] font-semibold text-neutral-400 uppercase tracking-wider flex items-center gap-1">
                 <ChevronDown size={12} />
-                <span>workspace / src</span>
+                <span className="flex-1">workspace / src</span>
+                {onUploadFiles && (
+                  <>
+                    <input
+                      ref={uploadRef}
+                      type="file"
+                      multiple
+                      accept=".html,.htm,.css,.js,.jsx,.ts,.tsx,.mjs,.json,.txt,.md,.svg,.png,.jpg,.jpeg,.gif,.webp,.ico"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        if (e.target.files) onUploadFiles(e.target.files);
+                        e.target.value = '';
+                      }}
+                    />
+                    <button
+                      onClick={() => uploadRef.current?.click()}
+                      className="rounded p-0.5 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                      title="Upload files from this device"
+                    >
+                      <Upload size={12} />
+                    </button>
+                  </>
+                )}
               </div>
 
               <div className="space-y-0.5 pl-1.5">
@@ -395,8 +427,10 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
             <div className="flex items-center gap-3">
               <span>{activeFile.path}</span>
               <span>UTF-8</span>
+              {saveState && <span title="Where this project is saved">· {saveState}</span>}
             </div>
             <div className="flex items-center gap-3">
+              {buildMs != null && <span title="Last preview build time">{buildMs}ms</span>}
               <span>{activeFile ? activeFile.language : '—'}</span>
               <span>Spaces: 2</span>
               <span>Ln {cursor.line}, Col {cursor.col}</span>
