@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   FileCode,
   Folder,
@@ -13,6 +13,12 @@ import {
   Maximize2,
   FileText,
   Save,
+  Zap,
+  Sparkles,
+  Command,
+  RotateCcw,
+  CheckCircle2,
+  CornerDownLeft,
 } from 'lucide-react';
 import { ProjectFile } from '../types';
 
@@ -37,8 +43,50 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
   const [openTabs, setOpenTabs] = useState<string[]>(['f-tab-bar', 'f-resize-obs']);
   const [isFileTreeOpen, setIsFileTreeOpen] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [foldedLines, setFoldedLines] = useState<Record<number, boolean>>({});
+
+  // In-Editor Inline ⌘K Prompt State
+  const [inlineKOpen, setInlineKOpen] = useState(false);
+  const [inlineKTargetLine, setInlineKTargetLine] = useState<number>(13);
+  const [inlineKPrompt, setInlineKPrompt] = useState('');
+  const [inlineKDiffHunk, setInlineKDiffHunk] = useState<{
+    original: string;
+    suggested: string;
+  } | null>(null);
+
+  // Live Ghost-Text Inline Autocomplete Engine state
+  const [ghostTextSuggestion, setGhostTextSuggestion] = useState<string | null>(
+    'const debouncedUpdate = debounceCompletion(updateLayoutDimensions, 35);'
+  );
+  const [ghostAccepted, setGhostAccepted] = useState(false);
 
   const activeFile = files.find((f) => f.id === activeFileId) || files[0];
+
+  // Keyboard shortcut listener inside editor (⌘K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setInlineKOpen((prev) => !prev);
+        if (!inlineKOpen) {
+          setInlineKDiffHunk(null);
+        }
+      }
+      if (inlineKDiffHunk) {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
+          e.preventDefault();
+          handleAcceptInlineK();
+        }
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n') {
+          e.preventDefault();
+          handleRejectInlineK();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [inlineKOpen, inlineKDiffHunk]);
 
   const handleTabClick = (fileId: string) => {
     if (!openTabs.includes(fileId)) {
@@ -62,29 +110,36 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Syntax highlighting helper
-  const renderEditorLines = (content: string) => {
-    const lines = content.split('\n');
+  const handleAcceptGhostText = () => {
+    setGhostAccepted(true);
+    setGhostTextSuggestion(null);
+  };
 
-    return lines.map((line, idx) => (
-      <div
-        key={idx}
-        className={`flex items-start text-[12px] leading-[20px] font-code hover:bg-neutral-500/5 select-text`}
-      >
-        <div
-          className={`w-10 shrink-0 pr-3 text-right select-none ${
-            isDark ? 'text-neutral-600' : 'text-neutral-400'
-          }`}
-        >
-          {idx + 1}
-        </div>
-        <div className={`flex-1 px-2 whitespace-pre overflow-x-auto ${
-          isDark ? 'text-neutral-200' : 'text-neutral-800'
-        }`}>
-          {colorizeSyntax(line, isDark)}
-        </div>
-      </div>
-    ));
+  const toggleFold = (lineNum: number) => {
+    setFoldedLines((prev) => ({ ...prev, [lineNum]: !prev[lineNum] }));
+  };
+
+  // Submit in-editor ⌘K prompt
+  const handleInlineKSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inlineKPrompt.trim()) return;
+
+    // Simulate instant streaming inline diff
+    setInlineKDiffHunk({
+      original: '    const iconSize = isCompact ? 14 : 16;',
+      suggested: '    const iconSize = useMemo(() => (isCompact ? 14 : 16), [isCompact]);',
+    });
+  };
+
+  const handleAcceptInlineK = () => {
+    setInlineKDiffHunk(null);
+    setInlineKOpen(false);
+    setInlineKPrompt('');
+  };
+
+  const handleRejectInlineK = () => {
+    setInlineKDiffHunk(null);
+    setInlineKPrompt('');
   };
 
   const colorizeSyntax = (str: string, dark: boolean) => {
@@ -114,6 +169,8 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
     });
   };
 
+  const lines = activeFile.content.split('\n');
+
   return (
     <div
       className={`flex-1 flex flex-col justify-between overflow-hidden select-none text-[13px] transition-colors ${
@@ -127,7 +184,6 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
         }`}
       >
         <div className="flex items-center gap-2">
-          {/* Switch to Diff Review */}
           <button
             onClick={onSwitchToDiff}
             className={`px-2.5 py-1 text-xs rounded-md font-medium border transition-colors flex items-center gap-1.5 cursor-pointer ${
@@ -142,7 +198,6 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
 
           <div className="h-3.5 w-px bg-neutral-200 dark:bg-neutral-800" />
 
-          {/* Toggle File Tree */}
           <button
             onClick={() => setIsFileTreeOpen(!isFileTreeOpen)}
             className={`text-xs px-2 py-0.5 rounded transition-colors cursor-pointer ${
@@ -157,8 +212,29 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
           </button>
         </div>
 
-        {/* Copy & Status Actions */}
+        {/* Live Ghost Autocomplete Status & Trigger ⌘K */}
         <div className="flex items-center gap-2">
+          {/* Trigger ⌘K in editor */}
+          <button
+            onClick={() => setInlineKOpen(!inlineKOpen)}
+            className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
+              inlineKOpen
+                ? 'bg-purple-600 text-white border-purple-600 shadow-sm'
+                : isDark
+                ? 'bg-neutral-800 border-neutral-700 text-neutral-300 hover:text-white'
+                : 'bg-neutral-50 border-neutral-300 text-neutral-700 hover:text-neutral-900'
+            }`}
+            title="Open Inline Composer (⌘K)"
+          >
+            <Sparkles size={11} className={inlineKOpen ? 'text-white' : 'text-purple-500'} />
+            <span>Inline ⌘K</span>
+          </button>
+
+          <div className="flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+            <Zap size={11} />
+            <span>Ghost: 38ms</span>
+          </div>
+
           <button
             onClick={handleCopyCode}
             className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 p-1 transition-colors cursor-pointer"
@@ -169,9 +245,9 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
         </div>
       </div>
 
-      {/* Main Body: File Tree + Tabs & Editor */}
+      {/* Main Body: File Tree + Tabs + Breadcrumbs + Editor + Minimap */}
       <div className="flex-1 flex overflow-hidden">
-        {/* File Tree Explorer (Collapsible) */}
+        {/* File Tree Explorer */}
         {isFileTreeOpen && (
           <div
             className={`w-52 shrink-0 border-r flex flex-col justify-between overflow-y-auto text-xs ${
@@ -224,7 +300,7 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
           </div>
         )}
 
-        {/* Editor Area with Tab Bar */}
+        {/* Editor Area with Tab Bar, Breadcrumbs, and Minimap */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Tab Bar */}
           <div
@@ -267,9 +343,189 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
             })}
           </div>
 
-          {/* Editor Content */}
-          <div className="flex-1 overflow-y-auto py-2">
-            {renderEditorLines(activeFile.content)}
+          {/* Hierarchical Breadcrumbs Bar */}
+          <div
+            className={`h-6 px-3 border-b flex items-center gap-1.5 text-[11px] font-mono select-none ${
+              isDark ? 'bg-[#18181c] border-neutral-800/60 text-neutral-400' : 'bg-[#fafafc] border-[#e5e5e7]/60 text-neutral-500'
+            }`}
+          >
+            <span className="hover:text-blue-500 cursor-pointer">src</span>
+            <span>›</span>
+            <span className="hover:text-blue-500 cursor-pointer">components</span>
+            <span>›</span>
+            <span className="hover:text-blue-500 cursor-pointer">PaneContainer</span>
+            <span>›</span>
+            <span className="font-semibold text-neutral-700 dark:text-neutral-200">
+              {activeFile.name}
+            </span>
+            <span>›</span>
+            <span className="text-purple-500 font-medium">useTabDimensions()</span>
+          </div>
+
+          {/* Editor Canvas + Minimap Grid */}
+          <div className="flex-1 flex overflow-hidden">
+            {/* Main Code Viewport */}
+            <div className="flex-1 overflow-y-auto py-2 font-code text-[12px] leading-[20px]">
+              {lines.map((line, idx) => {
+                const lineNum = idx + 1;
+                const isFoldPoint = line.includes('function ') || line.includes('interface ') || line.includes('return (');
+
+                return (
+                  <React.Fragment key={idx}>
+                    <div className="group relative flex items-start hover:bg-neutral-500/5 select-text">
+                      {/* Code folding chevron */}
+                      <div className="w-4 shrink-0 flex items-center justify-center select-none text-neutral-400">
+                        {isFoldPoint && (
+                          <button
+                            onClick={() => toggleFold(lineNum)}
+                            className="opacity-0 group-hover:opacity-100 hover:text-neutral-900 dark:hover:text-white"
+                          >
+                            <ChevronDown size={11} />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Line Number */}
+                      <div className={`w-8 shrink-0 pr-2 text-right select-none ${isDark ? 'text-neutral-600' : 'text-neutral-400'}`}>
+                        {lineNum}
+                      </div>
+
+                      {/* Code Content */}
+                      <div className={`flex-1 px-2 whitespace-pre overflow-x-auto ${isDark ? 'text-neutral-200' : 'text-neutral-800'}`}>
+                        {colorizeSyntax(line, isDark)}
+                      </div>
+                    </div>
+
+                    {/* In-Editor Inline ⌘K Floating Prompt Bar */}
+                    {inlineKOpen && lineNum === inlineKTargetLine && (
+                      <div className="mx-8 my-2 p-3 rounded-xl border border-purple-500/40 bg-purple-500/10 shadow-xl backdrop-blur-md animate-fadeIn z-20">
+                        <div className="flex items-center justify-between text-xs font-sans pb-1.5">
+                          <div className="flex items-center gap-1.5 font-semibold text-purple-700 dark:text-purple-300">
+                            <Sparkles size={13} />
+                            <span>Edit inline with Cursor (⌘K)</span>
+                          </div>
+                          <button
+                            onClick={() => setInlineKOpen(false)}
+                            className="text-neutral-400 hover:text-neutral-700 dark:hover:text-white"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+
+                        {!inlineKDiffHunk ? (
+                          <form onSubmit={handleInlineKSubmit} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={inlineKPrompt}
+                              onChange={(e) => setInlineKPrompt(e.target.value)}
+                              placeholder="e.g. Memoize icon size calculation with useMemo"
+                              className={`flex-1 px-3 py-1.5 text-xs font-sans rounded-lg border focus:outline-none focus:ring-1 focus:ring-purple-500 ${
+                                isDark
+                                  ? 'bg-[#1e1e24] border-neutral-700 text-white'
+                                  : 'bg-white border-neutral-300 text-neutral-900'
+                              }`}
+                              autoFocus
+                            />
+                            <button
+                              type="submit"
+                              className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-sans text-xs font-semibold flex items-center gap-1 shadow-xs cursor-pointer"
+                            >
+                              <span>Generate</span>
+                              <CornerDownLeft size={11} />
+                            </button>
+                          </form>
+                        ) : (
+                          /* In-Place Inline Diff Preview */
+                          <div className="space-y-2 pt-1 font-code text-xs">
+                            <div className="p-2 rounded bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/20">
+                              - {inlineKDiffHunk.original}
+                            </div>
+                            <div className="p-2 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 animate-pulse">
+                              + {inlineKDiffHunk.suggested}
+                            </div>
+
+                            <div className="flex items-center justify-end gap-2 pt-1 font-sans">
+                              <button
+                                onClick={handleRejectInlineK}
+                                className="px-2.5 py-1 rounded text-xs border border-neutral-300 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                              >
+                                Reject (⌘N)
+                              </button>
+                              <button
+                                onClick={handleAcceptInlineK}
+                                className="px-3 py-1 rounded text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-medium flex items-center gap-1 shadow-xs cursor-pointer"
+                              >
+                                <Check size={12} />
+                                <span>Accept (⌘Y)</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+
+              {/* Ghost Autocomplete Prompt */}
+              {ghostTextSuggestion && !ghostAccepted && (
+                <div className="mx-10 my-2 p-2 rounded-lg border border-purple-500/30 bg-purple-500/5 flex items-center justify-between text-xs animate-fadeIn">
+                  <div className="flex items-center gap-2 font-code">
+                    <span className="text-neutral-400 italic">// Ghost Suggestion:</span>
+                    <span className="text-purple-600 dark:text-purple-300 font-medium">
+                      {ghostTextSuggestion}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleAcceptGhostText}
+                      className="px-2.5 py-0.5 rounded bg-purple-600 hover:bg-purple-500 text-white font-sans text-[11px] font-medium flex items-center gap-1 shadow-xs cursor-pointer"
+                    >
+                      <span>Tab to Accept</span>
+                    </button>
+                    <button
+                      onClick={() => setGhostTextSuggestion(null)}
+                      className="text-neutral-400 hover:text-neutral-600 text-[11px]"
+                    >
+                      Esc
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Monaco-Grade Interactive Minimap (Bird's Eye View) */}
+            <div
+              className={`w-20 shrink-0 border-l p-1 overflow-hidden select-none flex flex-col justify-start relative ${
+                isDark ? 'bg-[#18181b]/50 border-neutral-800' : 'bg-neutral-50/50 border-[#e5e5e7]'
+              }`}
+            >
+              {/* Active Viewport Scrubber Thumb */}
+              <div className="absolute top-2 left-0 right-0 h-16 bg-blue-500/10 border-y border-blue-500/30 pointer-events-none" />
+
+              {/* Miniature Code Lines */}
+              <div className="space-y-0.5 opacity-60">
+                {lines.map((l, i) => {
+                  const width = Math.min(Math.max((l.trim().length / 60) * 100, 15), 90);
+                  const isModified = i >= 12 && i <= 15;
+
+                  return (
+                    <div
+                      key={i}
+                      className={`h-[2px] rounded-xs ${
+                        isModified
+                          ? 'bg-emerald-500'
+                          : isDark
+                          ? 'bg-neutral-600'
+                          : 'bg-neutral-400'
+                      }`}
+                      style={{ width: `${width}%` }}
+                    />
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           {/* Status Bar */}
@@ -285,7 +541,7 @@ export const CodeEditorPane: React.FC<CodeEditorPaneProps> = ({
             <div className="flex items-center gap-3">
               <span>TypeScript JSX</span>
               <span>Spaces: 2</span>
-              <span>Ln {activeFile.content.split('\n').length}, Col 1</span>
+              <span>Ln {lines.length}, Col 1</span>
             </div>
           </div>
         </div>

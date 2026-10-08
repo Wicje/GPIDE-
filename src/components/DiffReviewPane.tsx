@@ -19,7 +19,7 @@ import {
   CheckSquare,
   Square,
 } from 'lucide-react';
-import { DiffFile, DiffViewMode } from '../types';
+import { DiffFile, DiffViewMode, RightPaneMode } from '../types';
 import { CodeLine } from './CodeLine';
 import { SplitDiffViewer } from './SplitDiffViewer';
 import { TerminalDrawer } from './TerminalDrawer';
@@ -31,8 +31,11 @@ interface DiffReviewPaneProps {
   onToggleStageFile: (fileId: string) => void;
   onCreatePR: () => void;
   onCommitPush: () => void;
+  onOpenDeploy?: () => void;
   onAskComposer?: (codeSnippet: string) => void;
   onSwitchToEditor?: () => void;
+  rightPaneMode?: RightPaneMode;
+  onSelectPaneMode?: (mode: RightPaneMode) => void;
   diffViewMode: DiffViewMode;
   onToggleDiffViewMode: () => void;
   isTerminalOpen: boolean;
@@ -49,8 +52,11 @@ export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
   onToggleStageFile,
   onCreatePR,
   onCommitPush,
+  onOpenDeploy,
   onAskComposer,
   onSwitchToEditor,
+  rightPaneMode = 'diff',
+  onSelectPaneMode,
   diffViewMode,
   onToggleDiffViewMode,
   isTerminalOpen,
@@ -130,17 +136,57 @@ export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
               <span className="font-sans font-medium hidden sm:inline">Telemetry</span>
             </button>
 
-            {onSwitchToEditor && (
-              <button
-                onClick={onSwitchToEditor}
-                className={`p-1 rounded transition-colors cursor-pointer flex items-center gap-1 text-[11px] hover:text-neutral-700 dark:hover:text-neutral-200 ${
-                  isDark ? 'text-neutral-400' : 'text-neutral-600'
-                }`}
-                title="Switch to full code editor"
-              >
-                <FileCode size={13} />
-                <span className="font-sans font-medium hidden sm:inline">Editor</span>
-              </button>
+            {onSelectPaneMode && (
+              <div className="flex items-center gap-1 bg-neutral-100 dark:bg-neutral-800 p-0.5 rounded-md border border-neutral-200 dark:border-neutral-700">
+                <button
+                  onClick={() => onSelectPaneMode('diff')}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors cursor-pointer ${
+                    rightPaneMode === 'diff'
+                      ? isDark
+                        ? 'bg-neutral-700 text-white'
+                        : 'bg-white text-neutral-900 shadow-2xs'
+                      : 'text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
+                  }`}
+                >
+                  Diff
+                </button>
+                <button
+                  onClick={() => onSelectPaneMode('editor')}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors cursor-pointer ${
+                    rightPaneMode === 'editor'
+                      ? isDark
+                        ? 'bg-neutral-700 text-white'
+                        : 'bg-white text-neutral-900 shadow-2xs'
+                      : 'text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
+                  }`}
+                >
+                  Editor
+                </button>
+                <button
+                  onClick={() => onSelectPaneMode('preview')}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors cursor-pointer ${
+                    rightPaneMode === 'preview'
+                      ? isDark
+                        ? 'bg-neutral-700 text-white'
+                        : 'bg-white text-neutral-900 shadow-2xs'
+                      : 'text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
+                  }`}
+                >
+                  Preview
+                </button>
+                <button
+                  onClick={() => onSelectPaneMode('tests')}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors cursor-pointer ${
+                    rightPaneMode === 'tests'
+                      ? isDark
+                        ? 'bg-neutral-700 text-white'
+                        : 'bg-white text-neutral-900 shadow-2xs'
+                      : 'text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
+                  }`}
+                >
+                  Vitest
+                </button>
+              </div>
             )}
           </div>
 
@@ -220,6 +266,23 @@ export const DiffReviewPane: React.FC<DiffReviewPaneProps> = ({
           >
             Create PR
           </button>
+
+          {onOpenDeploy && (
+            <button
+              onClick={onOpenDeploy}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium rounded-md shadow-2xs transition-all cursor-pointer ${
+                isDark
+                  ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700'
+                  : 'bg-white hover:bg-neutral-50 text-neutral-800 border border-[#d2d2d6]'
+              }`}
+              title="Push to GitHub & Deploy to Vercel (⌘V)"
+            >
+              <svg viewBox="0 0 76 65" fill="currentColor" className="w-2.5 h-2.5">
+                <path d="M37.5274 0L75.0548 65H0L37.5274 0Z" />
+              </svg>
+              <span>Deploy</span>
+            </button>
+          )}
 
           <button
             onClick={onCommitPush}

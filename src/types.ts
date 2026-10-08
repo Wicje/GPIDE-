@@ -86,8 +86,45 @@ export interface SessionData {
   model: string;
 }
 
-export type RightPaneMode = 'diff' | 'editor';
+export type RightPaneMode = 'diff' | 'editor' | 'preview' | 'tests';
 export type DiffViewMode = 'unified' | 'split';
 export type ThemeMode = 'light' | 'dark';
+export type DeviceViewport = 'desktop' | 'tablet' | 'mobile';
+
+export interface AgentPhase {
+  id: string;
+  name: string;
+  status: 'completed' | 'running' | 'queued' | 'failed';
+  details: string;
+  duration?: string;
+  tokens?: number;
+}
+
+export interface ToolApprovalRequest {
+  id: string;
+  tool: string;
+  command: string;
+  riskLevel: 'safe' | 'medium' | 'destructive';
+  status: 'pending' | 'approved' | 'rejected';
+}
+
+export interface AttachedContext {
+  id: string;
+  name: string;
+  type: 'file' | 'git' | 'doc';
+  tokens: number;
+}
+
+export interface TestCase {
+  id: string;
+  name: string;
+  file: string;
+  status: 'passed' | 'failed' | 'running';
+  durationMs: number;
+  expected?: string;
+  actual?: string;
+  error?: string;
+}
+
 
 

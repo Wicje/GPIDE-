@@ -33,6 +33,8 @@ interface CommandPaletteModalProps {
   onCreatePR: () => void;
   onCommitPush: () => void;
   onNewAgent: () => void;
+  onOpenDeploy?: () => void;
+  onOpenAccount?: () => void;
   theme?: 'light' | 'dark';
 }
 
@@ -46,6 +48,8 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
   onCreatePR,
   onCommitPush,
   onNewAgent,
+  onOpenDeploy,
+  onOpenAccount,
   theme = 'light',
 }) => {
   const [query, setQuery] = useState('');
@@ -62,6 +66,27 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
       icon: isDark ? <Sun size={14} className="text-amber-500" /> : <Moon size={14} className="text-purple-500" />,
       action: () => {
         onToggleTheme();
+        onClose();
+      },
+    },
+    {
+      id: 'deploy-vercel',
+      title: 'Deploy Preview to Vercel (Production Edge)',
+      shortcut: '⌘V',
+      category: 'Deployment',
+      icon: <Terminal size={14} className="text-blue-500" />,
+      action: () => {
+        if (onOpenDeploy) onOpenDeploy();
+        onClose();
+      },
+    },
+    {
+      id: 'account-settings',
+      title: 'Account Settings & Usage (Cursor Pro)',
+      category: 'Preferences',
+      icon: <Layers size={14} className="text-purple-500" />,
+      action: () => {
+        if (onOpenAccount) onOpenAccount();
         onClose();
       },
     },

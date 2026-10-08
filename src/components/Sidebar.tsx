@@ -25,6 +25,7 @@ interface SidebarProps {
   onSelectItem: (id: string) => void;
   onNewAgent?: () => void;
   onOpenCommandPalette?: () => void;
+  onOpenAccount?: () => void;
   theme?: 'light' | 'dark';
 }
 
@@ -35,6 +36,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectItem,
   onNewAgent,
   onOpenCommandPalette,
+  onOpenAccount,
   theme = 'light',
 }) => {
   const isDark = theme === 'dark';
@@ -253,7 +255,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         }`}
       >
         <div
-          onClick={onOpenCommandPalette}
+          onClick={onOpenAccount || onOpenCommandPalette}
           className={`flex items-center justify-between px-1.5 py-1 rounded-md transition-colors cursor-pointer ${
             isDark ? 'hover:bg-white/5' : 'hover:bg-black/4'
           }`}
