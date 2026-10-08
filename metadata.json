@@ -1,0 +1,6 @@
+{
+  "name": "Cursor Composer Ghost",
+  "description": "Pixel-perfect recreation of Cursor's Composer Ghost AI IDE interface with agent workflow, chat stream, and multi-file code diff review pane.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
